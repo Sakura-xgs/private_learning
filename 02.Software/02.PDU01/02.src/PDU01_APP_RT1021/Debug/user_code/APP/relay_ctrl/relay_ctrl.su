@@ -1,0 +1,7 @@
+../user_code/APP/relay_ctrl/relay_ctrl.c:16:6:ParseRelayCtrlMsg	16	static
+../user_code/APP/relay_ctrl/relay_ctrl.c:40:6:CutOffAllRelaysCmd	24	static
+../user_code/APP/relay_ctrl/relay_ctrl.c:47:6:IsAllRelayCutOff	16	static
+../user_code/APP/relay_ctrl/relay_ctrl.c:64:6:RelayCtrlFunc	24	static
+../user_code/APP/relay_ctrl/relay_ctrl.c:88:6:CutOffAllRelay	16	static
+../user_code/APP/relay_ctrl/relay_ctrl.c:94:6:Relay_Ctrl_Task	24	static
+../user_code/APP/relay_ctrl/relay_ctrl.c:137:6:Relay_Ctrl_Init_task	32	static

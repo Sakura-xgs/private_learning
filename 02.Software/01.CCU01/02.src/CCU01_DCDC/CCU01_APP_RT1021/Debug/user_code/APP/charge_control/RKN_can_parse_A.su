@@ -1,0 +1,14 @@
+../user_code/APP/charge_control/RKN_can_parse_A.c:35:13:RecvMultipackTimeoutCb_A	24	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:70:6:RecvMultipackTimerTreat_A	32	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:161:6:AS_BcpPrase	40	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:196:6:AS_BcsPrase	32	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:234:13:MessageSequenceParseFunc	24	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:269:13:ErrorCodeByCP_ParseFunc	24	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:326:13:ErrorCodeIIParseFunc	24	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:692:13:EVErrorCodeByEV_ParseFunc	24	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:767:13:ErrorCodeParseFunc	24	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:1328:6:RKNBstMessageProcess	24	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:1377:6:RKNBemTimeoutProcess	24	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:1456:6:RKNBemErrorProcess	32	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:1503:6:HandleEBMultipack_A	32	static
+../user_code/APP/charge_control/RKN_can_parse_A.c:1580:6:RKNCAN1Parse	40	static

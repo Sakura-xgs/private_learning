@@ -1,0 +1,271 @@
+/*
+ * JWT_can_comm_A.c
+ *
+ *  Created on: 2025年4月14日
+ *      Author: qjwu
+ */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+#include "stdio.h"
+#include "hal_can.h"
+#include "fsl_flexcan.h"
+#include "hal_ext_rtc.h"
+#include "fsl_gpio.h"
+#include "hal_sys_IF.h"
+#include "hal_ext_rtc.h"
+
+#include "pos_IF.h"
+#include "imd_IF.h"
+#include "AS_charge_comm.h"
+#include "AS_charge_parse.h"
+#include "JWT_can_comm.h"
+#include "tcp_client_IF.h"
+#include "meter_IF.h"
+#include "SignalManage.h"
+#include "emergency_fault_IF.h"
+#include "uart_comm.h"
+
+static g_psCharge_Control_t g_sJWT_Secc = {0};
+
+static void JWTChargeControl(Gun_Id_e eGun_id)
+{
+	if (FALSE == GunIdValidCheck(eGun_id))
+	{
+		return ;
+	}
+
+	Com_Stage_Def_e eResult = INITDATA;
+	(void)memset(&g_sBms_ctrl[eGun_id], 0, sizeof(g_sBms_ctrl[eGun_id]));
+
+	if (FALSE == ChargeStartVoltageCheck(eGun_id))
+	{
+		return ;
+	}
+
+	CheckAnotherGunStatus(eGun_id);
+
+	while (1)
+	{
+		switch (g_sBms_ctrl[eGun_id].sStage.eNow_status)
+		{
+			case INITDATA:
+				if (TRUE == BmsStageSwitchCheck(&g_sBms_ctrl[eGun_id].sStage))
+				{
+					//只用作状态初始化，不处理
+				}
+				g_sBms_ctrl[eGun_id].sStage.eNow_status = HANDSHAKE;
+				break;
+			case HANDSHAKE:
+				if (TRUE == BmsStageSwitchCheck(&g_sBms_ctrl[eGun_id].sStage))
+				{
+					g_sBms_ctrl[eGun_id].sMsg2bms_ctrl[CHM].bSend_flag = TRUE;
+					g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BHM].uiStart_tick = xTaskGetTickCount();
+				}
+				else
+				{
+					eResult = AS_BmsHandshakeTreat(eGun_id);
+
+					if (CONFIGURE == eResult)
+					{
+						g_sBms_ctrl[eGun_id].sStage.eNow_status = CONFIGURE;
+						g_sGun_data[eGun_id].sTemp.bAllow_charge_flag = TRUE;
+					}
+					else
+					{
+						//握手失败，恢复状态
+						g_ucCF_Secc_StartPlc[eGun_id] = PLC_WAIT_TO_START;
+						if (TIMEOUT == eResult)
+						{
+							g_sBms_ctrl[eGun_id].sStage.eNow_status = TIMEOUT;
+						}
+						else
+						{
+							g_sBms_ctrl[eGun_id].sStage.eNow_status = STOPCHARGE;
+						}
+						if (FALSE == CheckEVStop(eGun_id))
+						{
+							g_sGun_data[eGun_id].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+						}
+						my_printf(USER_ERROR, "%s:%d %s charge HANDSHAKE failed\n", __FILE__, __LINE__, (eGun_id==GUN_A)?"GUN_A":"GUN_B");
+					}
+				}
+				break;
+			case CONFIGURE:
+				if (TRUE == BmsStageSwitchCheck(&g_sBms_ctrl[eGun_id].sStage))
+				{
+					g_sBms_ctrl[eGun_id].sMsg2bms_ctrl[CTS].bSend_flag = TRUE;
+					g_sBms_ctrl[eGun_id].sMsg2bms_ctrl[CML].bSend_flag = TRUE;
+					g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BRO_00].uiStart_tick = xTaskGetTickCount();
+					g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BRO_AA].uiStart_tick = xTaskGetTickCount();
+				}
+				else
+				{
+					eResult = AS_BmsConfigTreat(eGun_id);
+
+					if (CHARGING == eResult)
+					{
+						g_sBms_ctrl[eGun_id].sStage.eNow_status = CHARGING;
+					}
+					else
+					{
+						if (TIMEOUT == eResult)
+						{
+							g_sBms_ctrl[eGun_id].sStage.eNow_status = TIMEOUT;
+						}
+						else
+						{
+							g_sBms_ctrl[eGun_id].sStage.eNow_status = STOPCHARGE;
+						}
+						g_sGun_data[eGun_id].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+						my_printf(USER_ERROR, "%s:%d %s charge CONFIGURE failed\n", __FILE__, __LINE__, (eGun_id==GUN_A)?"GUN_A":"GUN_B");
+					}
+				}
+				break;
+			case CHARGING:
+				if (TRUE == BmsStageSwitchCheck(&g_sBms_ctrl[eGun_id].sStage))
+				{
+					g_sBms_ctrl[eGun_id].sMsg2bms_ctrl[CCS].bSend_flag = TRUE;
+
+					if (TRUE != AS_BmsPrechargeTreat(eGun_id))
+					{
+						g_sBms_ctrl[eGun_id].sStage.eNow_status = STOPCHARGE;
+						g_sGun_data[eGun_id].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+					}
+				}
+				else
+				{
+					//充电启动完成
+					g_bStart_charge_success_flag[eGun_id] = TRUE;
+
+					eResult = AS_BmsChargingTreat(eGun_id);
+
+					if (STAGEMAX != eResult)
+					{
+						if (TIMEOUT == eResult)
+						{
+							g_sBms_ctrl[eGun_id].sStage.eNow_status = TIMEOUT;
+						}
+						else
+						{
+							g_sBms_ctrl[eGun_id].sStage.eNow_status = STOPCHARGE;
+						}
+						g_sGun_data[eGun_id].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+						my_printf(USER_ERROR, "%s:%d %s charge stop\n", __FILE__, __LINE__, (eGun_id==GUN_A)?"GUN_A":"GUN_B");
+					}
+				}
+				break;
+			case TIMEOUT:
+				if (TRUE == BmsStageSwitchCheck(&g_sBms_ctrl[eGun_id].sStage))
+				{
+					g_psIMD_data->sPublic_data[eGun_id].eCheck_flag = IMD_DISABLE;
+	            	//状态变更，发送充电实时数据上传报文
+					g_sGun_data[eGun_id].sTemp.eCharge_step = END_OF_CHARGE_CEM;
+	            	TcpSendControl(&g_sMsg_control.sCharging_control.bSend_charging_data_flag);
+					g_sGun_data[eGun_id].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+
+					if (GUN_A == eGun_id)
+					{
+						StopRelayControl_A();
+					}
+					else
+					{
+						StopRelayControl_B();
+					}
+
+					//JWT修改BEM定义每次停充都会发送，非超时发送，报文内容和BST一致
+					//主动发送CEM
+					for (U8 i = 1; i < (U8)BMAX; i++)
+					{
+						if (0U != g_sBms_ctrl[eGun_id].sRecv_bms_timeout[i].bTimeout_flag)
+						{
+							my_printf(USER_ERROR, "%s:%d %s TIMEOUT: recv_bms_timeout flag = %d\n", __FILE__, __LINE__, (eGun_id==GUN_A)?"GUN_A":"GUN_B", i);
+							//清除之前的发送报文标志
+							(void)memset(&g_sBms_ctrl[eGun_id].sMsg2bms_ctrl[0], 0, sizeof(Msg2bms_Ctrl_t)*(U8)CMAX);
+							g_sBms_ctrl[eGun_id].sMsg2bms_ctrl[CEM].bSend_flag = TRUE;
+
+							g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BSD].uiStart_tick = xTaskGetTickCount();
+							g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BST].uiStart_tick = xTaskGetTickCount();
+						}
+					}
+				}
+				else
+				{
+					if (TRUE == AS_BmsTimeoutTreat(eGun_id))
+					{
+						my_printf(USER_INFO, "%s TIMEOUT process complete\n", (eGun_id==GUN_A)?"GUN_A":"GUN_B");
+						ChargeFinishProcess(eGun_id, FALSE);
+
+						return;
+					}
+				}
+				break;
+			case STOPCHARGE:
+				if (TRUE == BmsStageSwitchCheck(&g_sBms_ctrl[eGun_id].sStage))
+				{
+					//绝缘监测关闭
+					g_psIMD_data->sPublic_data[eGun_id].eCheck_flag = IMD_DISABLE;
+	            	//状态变更，发送充电实时数据上传报文
+					g_sGun_data[eGun_id].sTemp.eCharge_step = END_OF_CHARGE_CST;
+	            	TcpSendControl(&g_sMsg_control.sCharging_control.bSend_charging_data_flag);
+
+					if (GUN_A == eGun_id)
+					{
+						StopRelayControl_A();
+					}
+					else
+					{
+						StopRelayControl_B();
+					}
+
+					//接受到车端BST/BEM停止
+					if ((g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BST].unRecv_cnt > 0U)
+							|| (g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BEM].unRecv_cnt > 0U))
+					{
+						my_printf(USER_INFO, "%s receive BMS BST/BEM stop charge\n", (eGun_id==GUN_A)?"GUN_A":"GUN_B");
+					}
+					else//桩端主动CST停止
+					{
+						my_printf(USER_INFO, "%s CCU send CST stop charge\n", (eGun_id==GUN_A)?"GUN_A":"GUN_B");
+					}
+					g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BSD].uiStart_tick = xTaskGetTickCount();
+					g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BST].uiStart_tick = g_sBms_ctrl[eGun_id].sRecv_bms_timeout[BSD].uiStart_tick;
+					g_sBms_ctrl[eGun_id].sMsg2bms_ctrl[CCS].bSend_flag = FALSE;
+					g_sBms_ctrl[eGun_id].sMsg2bms_ctrl[CST].bSend_flag = TRUE;
+
+					vTaskDelay(500);//确保BMS收到CST
+				}
+				else
+				{
+					if (TRUE == AS_BmsStopChargeTreat(eGun_id))
+					{
+						my_printf(USER_INFO, "%s STOPCHARGE process complete\n", (eGun_id==GUN_A)?"GUN_A":"GUN_B");
+						ChargeFinishProcess(eGun_id, FALSE);
+
+						return;
+					}
+				}
+				break;
+			default:
+				g_sGun_data[eGun_id].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+				ChargeFinishProcess(eGun_id, FALSE);
+				my_printf(USER_ERROR, "%s:%d %s charge status error:eNow_status=%d\n", __FILE__, __LINE__, (eGun_id==GUN_A)?"GUN_A":"GUN_B",
+						g_sBms_ctrl[eGun_id].sStage.eNow_status);
+				break;
+		}
+		vTaskDelay(15);
+	}
+}
+
+g_psCharge_Control_t* GetJwtSeccModel(void)
+{
+	return &g_sJWT_Secc;
+}
+
+void JWTSeccInit(void)
+{
+	g_sJWT_Secc.ChargeControl = &JWTChargeControl;
+	g_sJWT_Secc.CAN1DataParse = &JWTCAN1Parse;
+	g_sJWT_Secc.CAN2DataParse = &JWTCAN2Parse;
+	g_sJWT_Secc.CANMessageSend = &SeccMessageSend;
+}

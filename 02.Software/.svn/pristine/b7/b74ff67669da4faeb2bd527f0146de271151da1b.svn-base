@@ -1,0 +1,693 @@
+#include "hal_uart_IF.h"
+#include "uart_comm.h"
+#include "semphr.h"
+#include "boot.h"
+#include "tcp_client_IF.h"
+#include "cig.h"
+#include "calculate_crc.h"
+#include "emergency_fault_IF.h"
+#include "SignalManage.h"
+
+/*******************************************************************************
+ * Definitions
+ ******************************************************************************/
+__BSS(SRAM_OC) CIG_Write_Control_t g_sCig_write_control = {0};
+__BSS(SRAM_OC) static Cig_Status_t g_sCig_status = {0};
+__BSS(SRAM_OC) static Cig_Msg_t g_sCig_msg = {0};
+
+__BSS(SRAM_OC) U8 s_ucCig_data[UART_COMM_BUF_LEN] = {0};
+__BSS(SRAM_OC) CIG_Upgrade_t CIG_Upgrade;
+
+static CigUartCtx_t s_sCigUartCtx =
+{
+    .bEnableSecondUart = FALSE,
+    .ucUart            = GB_GUNA_UART,
+    .uiNowTickCig      = 0
+};
+
+/*******************************************************************************
+ * Code
+ ******************************************************************************/
+
+/**
+ * @brief CIG继电器控制数据填充
+ * @param ucType: 继电器闭合/断开
+ * @param uiInput_data：数据
+ * @return
+ */
+void CigContrlDataInput(const U8 ucType, const U16 unInput_data)
+{
+	static U16 s_unLastControl_data = 0U;
+	U16 unNewControl_Data = g_sCig_write_control.unControl_data;
+
+	if (ucType == (U8)CIG_CLOSE)
+	{
+		unNewControl_Data |= unInput_data;
+	}
+	else
+	{
+		unNewControl_Data &= unInput_data;
+	}
+
+    if (unNewControl_Data != s_unLastControl_data)
+    {
+        g_sCig_write_control.unControl_data = unNewControl_Data;
+        g_sCig_write_control.bSend_flag = TRUE; // 仅数据变化时才触发控制逻辑
+        s_unLastControl_data = unNewControl_Data;
+    }
+}
+
+/**
+ * @brief CIG数据发送函数，防止总线数据冲突，等待收到响应后再次发送
+ * @param uart: 串口
+ * @param byte_num:数据长度
+ * @param buff：数据
+ * @return
+ */
+static void CigUartSend(UART_LIST uart, U32 byte_num, U8 *buff)
+{
+	CHECK_PTR_NULL_NO_RETURN(buff);
+
+	U16 unCrc_temp = CalCrc16(buff, (U16)(byte_num - CRC_LEN));
+	buff[CRC_OFFSET] = (U8)(unCrc_temp >> 8);
+	buff[CRC_OFFSET+1U] = (U8)(unCrc_temp & 0xFFU);
+
+	Uart_Dma_Send(uart, byte_num, buff);
+
+	return;
+}
+
+/**
+ * @brief 解析CIG小板信息：软硬件版本号、SN
+ * @param
+ * @return
+*/
+static void CigMsgParse(void)
+{
+	(void)memcpy(g_sPile_data.ucCig_soft_version, g_sCig_msg.unSoft_version, 16);
+	(void)memcpy(g_sPile_data.ucCig_hardware, g_sCig_msg.unHardware, 16);
+	(void)memcpy(g_sPile_data.ucCig_SN, g_sCig_msg.unSN, 32);
+}
+
+/**
+ * @brief 大端转小端
+ * @param
+ * @return
+*/
+static U16 Bid2Little(U16 unTarget_data)
+{
+	U16 unTemp = 0;
+	unTemp = ((unTarget_data & 0xFF00U) >> 8) | (((unTarget_data) & 0xFFU) << 8);
+	return unTemp;
+}
+/**
+ * @brief 解析CIG小板状态
+ * @param eGun_id:枪id
+ * @return
+*/
+static void CigStatusParse(void)
+{
+	U16 unTemp = 0;
+	//电子锁反馈状态
+	unTemp = Bid2Little(g_sCig_status.unDI_status);
+	g_sGun_data[GUN_A].ucBms_assist_power_feedback_status = ((unTemp >> 3U) & 0x01U);
+	g_sGun_data[GUN_A].ucGun_lock_relay_feedback_status = ((unTemp >> 1U) & 0x01U);
+	//CC1电压
+	unTemp = Bid2Little(g_sCig_status.unGunA_cc1);
+	//上传PCU精度0.01，当前精度0.1
+	g_sGun_data[GUN_A].unCC1_vol = unTemp*10U;
+	//板温
+	unTemp = Bid2Little(g_sCig_status.unPcb_temp1);
+	g_sPile_data.unCig_temp1 = unTemp;
+	//电子锁反馈状态
+	unTemp = Bid2Little(g_sCig_status.unDI_status);
+	g_sGun_data[GUN_B].ucBms_assist_power_feedback_status = ((unTemp >> 2U) & 0x01U);
+	g_sGun_data[GUN_B].ucGun_lock_relay_feedback_status = (unTemp & 0x01U);
+	//CC1电压
+	//上传PCU精度0.01，当前精度0.1
+	unTemp = Bid2Little(g_sCig_status.unGunB_cc1);
+	g_sGun_data[GUN_B].unCC1_vol = unTemp*10U;
+	//板温
+	unTemp = Bid2Little(g_sCig_status.unPcb_temp2);
+	g_sPile_data.unCig_temp2 = unTemp;
+}
+
+static void CigDataParse(const U8 *pucBuf, U16 unInput_len)
+{
+	//是否是满足标准协议长度
+	CHECK_PTR_NULL_NO_RETURN(pucBuf);
+	CHECK_MSG_LEN_NO_RETURN(unInput_len, 5U);
+
+	static Cig_Control_Res_t s_sCig_control_res = {0};
+
+	//解析
+	U16 unCrc_data = CalCrc16(pucBuf, (U16)(unInput_len - CRC_LEN));
+	unCrc_data = (((unCrc_data << 8) & 0xFF00U) | ((unCrc_data >> 8) & 0xFFU));
+
+	s_sCigUartCtx.uiNowTickCig = xTaskGetTickCount();
+
+//	uPRINTF("receive cig: ");
+//	for (int i = 0; i < unInput_len; i++)
+//	{
+//		uPRINTF("%02x ", pucBuf[i]);
+//	}
+//	uPRINTF("\n");
+//	uPRINTF("receive cig data CRC = %d\n", unCrc_data);
+
+	switch (unInput_len)
+	{
+	case CIG_VERSION_DATA:
+		(void)memcpy(&g_sCig_msg, pucBuf, unInput_len);
+
+		if (unCrc_data == g_sCig_msg.unCrc)
+		{
+			CigMsgParse();
+		}
+		break;
+	case CIG_STATUS_DATA:
+		(void)memcpy(&g_sCig_status, pucBuf, unInput_len);
+
+		if (unCrc_data == g_sCig_status.unCrc)
+		{
+			CigStatusParse();
+		}
+		break;
+	case CIG_RESPONSE_DATA:
+		(void)memcpy(&s_sCig_control_res, pucBuf, unInput_len);
+		//my_printf(USER_INFO, "%s:%d receive cig relay control response\n", __FILE__, __LINE__);
+		break;
+	default:
+		//
+		break;
+	}
+}
+
+/**
+ * @brief 解析CIG小板升级响应
+ * @param：s_ucCig_data：数据
+ * @param：u16RecByteNum：长度
+ * @return
+*/
+static void CigUpdateFunc(const U8 *s_ucCig_data, U16 u16RecByteNum)
+{
+	if (NULL == s_ucCig_data)
+	{
+		return;
+	}
+
+	//转485升级协议
+	__BSS(SRAM_OC) static U8 s_ucSend_data[280] = {0};
+	U16 u16Crc = 0;
+	U16 u16ReadCrc = 0;
+
+	u16Crc = crc16_ccitt_xmodem(&s_ucCig_data[3], u16RecByteNum - 7U, 0);//校验位是从命令码开始算的
+	u16ReadCrc = (U16)s_ucCig_data[u16RecByteNum-1U-3U] | ((U16)s_ucCig_data[u16RecByteNum-1U-2U] << 8);
+
+	s_ucSend_data[0] = 0xAA;
+	s_ucSend_data[1] = 0x55;
+	s_ucSend_data[2] = g_sStorage_data.ucPile_num;//桩编号;;//s_ucCig_data[2];//小板地址
+	s_ucSend_data[3] = 0x80;
+	s_ucSend_data[4] = 0x37;
+	s_ucSend_data[5] = CIG_Upgrade.gCigMessageId[0];
+	s_ucSend_data[6] = CIG_Upgrade.gCigMessageId[1];
+	s_ucSend_data[7] = 0;//数据域长度位高位,永远为0
+
+	if(u16Crc == u16ReadCrc)
+	{
+		//以下是数据域
+		if(s_ucCig_data[4] == 1U)//长度位1，0002-0006的命令
+		{
+			//+5是版本号
+			s_ucSend_data[8] = s_ucCig_data[4] + 5;
+
+			(void)memset(&s_ucSend_data[9],0,5);//软件版本5个字节
+			s_ucSend_data[14] = s_ucCig_data[5];//小板上报的结果
+		}
+		else//长度位大于1，证明这帧数据是升级请求，0001
+		{
+			if(s_ucCig_data[4] == 7U)//2位命令码加5位版本号
+			{
+				//(7-2)是去掉命令码和编号，+1是加结果
+				s_ucSend_data[8] = s_ucCig_data[4]-2+1;
+
+				if((s_ucCig_data[7] == 0xFFU) && (s_ucCig_data[8] == 0xFFU) //小板上报说软件版本和要升级的版本不符合
+					&& (s_ucCig_data[9] == 0xFFU) && (s_ucCig_data[10] == 0xFFU)
+					&& (s_ucCig_data[11] == 0xFFU))
+				{
+					(void)memset(&s_ucSend_data[9],0,5);//软件版本5个字节
+					s_ucSend_data[14] = 0x00;
+				}
+				else
+				{
+					(void)memcpy(&s_ucSend_data[9],&s_ucCig_data[7],5);
+					s_ucSend_data[14] = 0x01;
+				}
+			}
+		}
+	}
+	else//校验不对给上位机返回失败
+	{
+		s_ucSend_data[8] = 0x06;//数据域长度位低位
+		(void)memset(&s_ucSend_data[9],0,5);//5个字节
+		s_ucSend_data[14] = 0x00;
+	}
+
+	if(sockfd != -1)
+	{
+		//Uart_Dma_Send(DBG_UART, s_ucSend_data[8] + 9U , s_ucSend_data);
+		//Uart_Dma_Send(DBG_UART, s_ucCig_data[4] + 9U , s_ucCig_data);
+		//uPRINTF("\n");
+		(void)TcpSend(s_ucSend_data, s_ucSend_data[8] + 9U);
+	}
+}
+
+static void CigDataProcess(void)
+{
+	U16 u16RecByteNum = 0;
+
+	__BSS(SRAM_OC) static U8 s_ucCig_data[UART_COMM_BUF_LEN] = {0};
+
+	u16RecByteNum = RecUartData(s_sCigUartCtx.ucUart, &s_ucCig_data[0], UART_COMM_BUF_LEN);
+	if (UART_COMM_BUF_LEN < u16RecByteNum)
+	{
+		return;
+	}
+
+	if((s_ucCig_data[0] == 0xAAU) && (s_ucCig_data[1] == 0x55U) && (s_ucCig_data[2] == CIG_ADDR) && (s_ucCig_data[3] == 0x50U))//cig升级命令码
+	{
+		CIG_Upgrade.TimeOut = 0U;
+		CigUpdateFunc(s_ucCig_data, u16RecByteNum);
+	}
+	else
+	{
+		//解析CIG小板数据
+		CigDataParse(s_ucCig_data, u16RecByteNum);
+	}
+}
+
+/**
+ * @brief 发送与CIG小板的交互数据
+ * @param ucCmd:cmd
+ * @param unReg_addr:寄存器地址
+ * @param unReg_data:写入的数据/读取数据的长度
+ * @return
+*/
+static void CigSendData(UART_LIST uart, U8 ucCmd, U16 unReg_addr, U16 unReg_data)
+{
+	U8 ucSend_buf[] = {SLAVE_ADDR, ucCmd, (U8)((unReg_addr >> 8) & 0xFFU), (U8)(unReg_addr & 0xFFU), (U8)((unReg_data >> 8) & 0xFFU), (U8)(unReg_data & 0xFFU), 0, 0};
+
+	CigUartSend(uart, sizeof(ucSend_buf), ucSend_buf);
+
+//	if (ucCmd == 0x03)
+//	{
+//		uPRINTF("cig control: ");
+//		for (int i = 0; i < sizeof(ucSend_buf); i++)
+//		{
+//			uPRINTF("%02x ", ucSend_buf[i]);
+//		}
+//		uPRINTF("\n");
+//	}
+}
+
+/**
+ * @brief CIG通讯命令控制
+ * @param sMode:命令功能
+ * @return
+*/
+static void CigCOMControl(UART_LIST uart, CIG_Control_t sMode)
+{
+	switch (sMode)
+	{
+	case CIG_REALY_CONTROL:
+		CigSendData(uart, WRITE_CMD, CIG_CONTROL_START_REG, g_sCig_write_control.unControl_data);
+		break;
+	case CIG_READ_STATUS:
+		CigSendData(uart, READ_CMD, CIG_STATUS_START_REG, CIG_STATUS_READ_REG_NUM);
+		break;
+	case CIG_READ_VERSION:
+		CigSendData(uart, READ_CMD, CIG_MSG_START_REG, CIG_MSG_READ_REG_NUM);
+		break;
+	case CIG_REALY_RESET:
+		CigSendData(uart, WRITE_CMD, CIG_RESET_CONTROL, CIG_RESET_CMD);
+		break;
+	default:
+		//
+		break;
+	}
+}
+
+/**
+ * @brief CIG小板A枪通讯检测函数
+ * @param
+ * @return
+ */
+static void CigComCheck(void)
+{
+	S32 iTmp_flag = 0;
+
+	if ((xTaskGetTickCount() - s_sCigUartCtx.uiNowTickCig) > DEVICE_TIMEOUT_MS)
+	{
+		(void)GetSigVal(ALARM_ID_CIG_COMM_LOST_ERROR, &iTmp_flag);
+		if (iTmp_flag != COMM_LOST)
+		{
+			//置位通讯超时
+			PileAlarmSet(ALARM_ID_CIG_COMM_LOST_ERROR);
+			my_printf(USER_ERROR, "%s:%d GUN_A trigger CIG timeout fault\n", __FILE__, __LINE__);
+		}
+		//使用备用232
+		//s_sCigUartCtx.bEnableSecondUart = TRUE;
+	}
+	else
+	{
+		(void)GetSigVal(ALARM_ID_CIG_COMM_LOST_ERROR, &iTmp_flag);
+		if (iTmp_flag == COMM_LOST)
+		{
+			//恢复
+			PileAlarmReset(ALARM_ID_CIG_COMM_LOST_ERROR);
+			my_printf(USER_INFO, "GUN_A restore CIG timeout fault\n");
+		}
+	}
+}
+
+static void Cig_Request_Task(void * pvParameters)
+{
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+    volatile UBaseType_t uxHighWaterMark;
+#endif
+	s_sCigUartCtx.uiNowTickCig = xTaskGetTickCount();
+	g_sCig_write_control.bRead_version_flag = TRUE;
+
+	while (1)
+	{
+//		if (TRUE == s_sCigUartCtx.bEnableSecondUart)
+//		{
+//			s_sCigUartCtx.ucUart = GB_GUNB_UART;
+//		}
+		if (CIG_Upgrade.gblCigUpgradeStatus == FALSE)
+		{
+			CigComCheck();
+		}
+
+		//重启
+		if (TRUE == g_sCig_write_control.bReset_flag)
+		{
+			CigCOMControl(s_sCigUartCtx.ucUart, CIG_REALY_RESET);
+		}
+
+		if (CIG_Upgrade.gblCigUpgradeStatus == FALSE)
+		{
+			if (TRUE == g_sCig_write_control.bRead_version_flag)
+			{
+				CigCOMControl(s_sCigUartCtx.ucUart, CIG_READ_VERSION);
+				//cig小板版本信息读取
+				if (0U != strlen(g_sPile_data.ucCig_soft_version))
+				{
+					g_sCig_write_control.bRead_version_flag = FALSE;
+				}
+			}
+			else
+			{
+				//有控制命令
+				if (TRUE == g_sCig_write_control.bSend_flag)
+				{
+					//辅源反馈1：断开 0：闭合   枪锁反馈1：闭合 0：断开，需要处理
+					U16 unDI_status = (((g_sCig_status.unDI_status >> 8) & 0x03U) |
+					                   ((~(g_sCig_status.unDI_status >> 8)) & 0x0CU)) & 0x0FU;
+					//反馈状态和控制状态不一致
+					if ((g_sCig_write_control.unControl_data & 0x0FU) != unDI_status)
+					{
+						CigCOMControl(s_sCigUartCtx.ucUart, CIG_REALY_CONTROL);
+						vTaskDelay(50);
+					}
+					else
+					{
+						g_sCig_write_control.bSend_flag = FALSE;
+						//cig继电器状态变更，触发心跳
+						TcpSendControl(&g_sMsg_control.sHeart_control.bHeart_timeup_flag);
+					}
+				}
+				//读取状态
+				CigCOMControl(s_sCigUartCtx.ucUart, CIG_READ_STATUS);
+			}
+		}
+
+		CIG_Upgrade.TimeOut++;
+		//空闲
+		if ((U8)UNPLUGGED == GetGunStatus(GUN_A)
+				&& (U8)UNPLUGGED == GetGunStatus(GUN_B))
+		{
+			if (((CIG_Upgrade.TimeOut * IDLE_STATUS_TASK_PERIOD_MS) > 10000)
+						&& (CIG_Upgrade.gblCigUpgradeStatus != FALSE))
+			{
+				CIG_Upgrade.gblCigUpgradeStatus = FALSE;
+				g_sCig_write_control.bRead_version_flag = TRUE;
+			}
+			vTaskDelay(IDLE_STATUS_TASK_PERIOD_MS);
+		}
+		else//插枪
+		{
+			if (((CIG_Upgrade.TimeOut * WORKING_STATUS_TASK_PERIOD_MS) > 10000)
+						&& (CIG_Upgrade.gblCigUpgradeStatus != FALSE))
+			{
+				CIG_Upgrade.gblCigUpgradeStatus = FALSE;
+				g_sCig_write_control.bRead_version_flag = TRUE;
+			}
+			vTaskDelay(WORKING_STATUS_TASK_PERIOD_MS);
+		}
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+        uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+#endif
+	}
+}
+
+/*!
+ * @brief Main function
+ */
+static void Cig_Parse_GUN_Task(void * pvParameters)
+{
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+    volatile UBaseType_t uxHighWaterMark;
+#endif
+    BaseType_t err = pdFALSE;
+
+	while (1)
+	{
+		if (NULL != Uart_recBinarySemaphore(s_sCigUartCtx.ucUart))
+		{
+			err = xSemaphoreTake(Uart_recBinarySemaphore(s_sCigUartCtx.ucUart), portMAX_DELAY);
+			if (pdPASS == err)
+			{
+				CigDataProcess();
+			}
+			else
+			{
+				vTaskDelay(300);
+			}
+		}
+		else
+		{
+			vTaskDelay(300);
+		}
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+        uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+#endif
+	}
+}
+
+/**
+ * @brief 国标CC1状态同步枪状态函数
+ * @param type：国标CC1状态
+ * @param eGun_id：枪id
+ * @return
+ */
+static void GB_SetGunStatus(CC1_State_e type, const Gun_Id_e eGun_id)
+{
+	if (FALSE == GunIdValidCheck(eGun_id))
+	{
+		return ;
+	}
+
+	if ((type == CC1_ALREADY_CONNECT) || (type == CC1_NEW_CONNECT))
+	{
+		if (PLUGGED_IN != g_sGun_data[eGun_id].eConnect_status)
+		{
+			g_sGun_data[eGun_id].eConnect_status = PLUGGED_IN;
+			my_printf(USER_INFO, "CC1 update status -> PLUGGED_IN\n", (eGun_id==GUN_A)?"GUN_A":"GUNB");
+		}
+	}
+	else
+	{
+		if (UNPLUGGED != g_sGun_data[eGun_id].eConnect_status)
+		{
+			g_sGun_data[eGun_id].eConnect_status = UNPLUGGED;
+			my_printf(USER_INFO, "CC1 update status -> UNPLUGGED\n", (eGun_id==GUN_A)?"GUN_A":"GUNB");
+		}
+	}
+}
+
+static void CC1StatusCheck(const Gun_Id_e eGun_id)
+{
+	if (FALSE == GunIdValidCheck(eGun_id))
+	{
+		return ;
+	}
+
+    static U8 s_ucCount_4V[2] = {0}, s_ucCount_6V[2] = {0};
+    static U8 s_ucConnect_step[2] = {IDLE_STATUS, IDLE_STATUS};
+    static U32 s_uiConnect_step_tick[2] = {0};
+
+	U32 uiNow_tick = xTaskGetTickCount();
+
+    //用户按下枪按钮
+	if ((g_sGun_data[eGun_id].unCC1_vol < g_sStorage_data.unCC1_12V_max) && (g_sGun_data[eGun_id].unCC1_vol > g_sStorage_data.unCC1_12V_min))
+	{
+		s_ucCount_6V[eGun_id] = 0;
+		s_ucCount_4V[eGun_id] = 0;
+        s_ucConnect_step[eGun_id] = GUN_PRESS_DOWN;
+        GB_SetGunStatus(CC1_WAIT_CONNECT, eGun_id);
+        s_uiConnect_step_tick[eGun_id] = uiNow_tick;
+        //my_printf(USER_INFO, "%s check CC1 change 6v-->12V\n", (eGun_id==GUN_A)?"GUN_A":"GUNB");
+	}
+	//用户松开枪按钮
+	else if ((g_sGun_data[eGun_id].unCC1_vol < g_sStorage_data.unCC1_6V_max) && (g_sGun_data[eGun_id].unCC1_vol > g_sStorage_data.unCC1_6V_min))
+	{
+		s_ucCount_6V[eGun_id]++;
+		if (s_ucCount_6V[eGun_id] > CC1_CHECK_TIMEOUT_CNT)
+		{
+			if (s_ucConnect_step[eGun_id] == GUN_LOCK_RELEASE)
+			{
+				//超过时间没有变成4V，说明并没有插抢到车
+				if (uiNow_tick - s_uiConnect_step_tick[eGun_id] > 10000U)
+				{
+					s_ucConnect_step[eGun_id] = IDLE_STATUS;
+					s_uiConnect_step_tick[eGun_id] = 0;
+					my_printf(USER_INFO, "%s check CC1 change 12v-->6V\n", (eGun_id==GUN_A)?"GUN_A":"GUNB");
+				}
+			}
+			else if (s_ucConnect_step[eGun_id] == GUN_PRESS_DOWN)
+			{
+				s_ucConnect_step[eGun_id] = GUN_LOCK_RELEASE;
+				s_uiConnect_step_tick[eGun_id] = uiNow_tick;
+				my_printf(USER_INFO, "%s check CC1 change 6V-->12V-->6V\n", (eGun_id==GUN_A)?"GUN_A":"GUNB");
+			}
+			else
+			{
+				//空闲状态
+				GB_SetGunStatus(CC1_DISCONNECT, eGun_id);
+				s_ucConnect_step[eGun_id] = IDLE_STATUS;
+				//出厂模式使用，否则会自动恢复导致调试/生产测试模式继电器控制不生效
+//				if (RELEASE_MODE == g_sPile_data.ucPile_config_mode)
+//				{
+//					//检测辅源和继电器状态，非断开则下发断开命令
+//					if (GUN_A == eGun_id)
+//					{
+//						CigContrlDataInput(CIG_OPEN, OPEN_GUNA_LOCK_RELAY_AND_12V_ASSIST);
+//					}
+//					else
+//					{
+//						CigContrlDataInput(CIG_OPEN, OPEN_GUNB_LOCK_RELAY_AND_12V_ASSIST);
+//					}
+//				}
+			}
+			s_ucCount_6V[eGun_id] = 0;
+			s_ucCount_4V[eGun_id] = 0;
+		}
+	}
+	//与车端BMS连接成功
+	else if ((g_sGun_data[eGun_id].unCC1_vol < g_sStorage_data.unCC1_4V_max) && (g_sGun_data[eGun_id].unCC1_vol > g_sStorage_data.unCC1_4V_min))
+	{
+        if ((s_ucConnect_step[eGun_id] == GUN_LOCK_RELEASE) || (s_ucConnect_step[eGun_id] == GUN_PRESS_DOWN))
+        {
+            s_ucCount_4V[eGun_id]++;
+            if (s_ucCount_4V[eGun_id] > CC1_CHECK_TIMEOUT_CNT)
+            {
+                s_ucCount_4V[eGun_id] = 0;
+                s_ucCount_6V[eGun_id] = 0;
+				s_ucConnect_step[eGun_id] = IDLE_STATUS;
+				GB_SetGunStatus(CC1_NEW_CONNECT, eGun_id);
+				my_printf(USER_INFO,"%s check CC1 status: CC1_NEW_CONNECT\n", (eGun_id==GUN_A)?"GUN_A":"GUNB");
+            }
+        }
+        else
+        {
+			s_ucCount_4V[eGun_id]++;
+			if (s_ucCount_4V[eGun_id] > CC1_CHECK_TIMEOUT_CNT)
+			{
+				s_ucCount_4V[eGun_id] = 0;
+				s_ucCount_6V[eGun_id] = 0;
+
+				GB_SetGunStatus(CC1_ALREADY_CONNECT, eGun_id);
+			}
+        }
+	}
+	else
+	{
+		static U8 ucPrintf_flag = 0;
+
+		if (0U == ucPrintf_flag % 20U)
+		{
+			my_printf(USER_INFO, "%s:%d %s check cc1 VOL error = %dV\n", __FILE__, __LINE__, (eGun_id==GUN_A)?"GUN_A":"GUN_B", g_sGun_data[eGun_id].unCC1_vol);
+		}
+		ucPrintf_flag++;
+	}
+}
+
+static void GUNA_CC1_Check_Task(void * pvParameters)
+{
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+    volatile UBaseType_t uxHighWaterMark;
+#endif
+	S32 iTmp_flag = 0;
+
+	while (1)
+	{
+		(void)GetSigVal(ALARM_ID_CIG_COMM_LOST_ERROR, &iTmp_flag);
+
+		if ((CIG_Upgrade.gblCigUpgradeStatus == FALSE)//不在升级状态
+				&& (iTmp_flag != COMM_LOST))//通信正常
+		{
+			CC1StatusCheck(GUN_A);
+		}
+		vTaskDelay(50);
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+        uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+#endif
+	}
+}
+
+static void GUNB_CC1_Check_Task(void * pvParameters)
+{
+	S32 iTmp_flag = 0;
+
+	while (1)
+	{
+		(void)GetSigVal(ALARM_ID_CIG_COMM_LOST_ERROR, &iTmp_flag);
+
+		if ((CIG_Upgrade.gblCigUpgradeStatus == FALSE)//不在升级状态
+				&& (iTmp_flag != COMM_LOST))//通信正常
+		{
+			CC1StatusCheck(GUN_B);
+		}
+		vTaskDelay(50);
+	}
+}
+
+void Cig_Init_Task(void * pvParameters)
+{
+    (void)pvParameters;
+
+	vTaskDelay(200);
+
+    taskENTER_CRITICAL();
+
+	if ((g_iGun_module[0] == GB) && (g_iGun_module[1] == GB))
+	{
+		(void)xTaskCreate(&Cig_Request_Task,     	  "CIG_REQUEST", 			500U/4U, NULL, GENERAL_TASK_PRIO, 	NULL);
+		(void)xTaskCreate(&Cig_Parse_GUN_Task,        "CIG_PARSE_GUN",			1200U/4U, NULL, GENERAL_TASK_PRIO,	NULL);
+		(void)xTaskCreate(&GUNA_CC1_Check_Task,  	  "GUNA_CC1_CHECK",			600U/4U, NULL, GENERAL_TASK_PRIO,	NULL);
+		(void)xTaskCreate(&GUNB_CC1_Check_Task,  	  "GUNB_CC1_CHECK",			600U/4U, NULL, GENERAL_TASK_PRIO,	NULL);
+	}
+    vTaskDelete(NULL);
+
+    taskEXIT_CRITICAL();
+}

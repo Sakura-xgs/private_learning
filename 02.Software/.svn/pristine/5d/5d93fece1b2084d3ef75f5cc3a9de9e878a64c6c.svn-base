@@ -1,0 +1,7 @@
+../user_code/APP/rfid/HW_rfid.c:27:6:XorChecksum	32	static
+../user_code/APP/rfid/HW_rfid.c:36:13:SendM1ReadData	24	static
+../user_code/APP/rfid/HW_rfid.c:56:13:HwRfidSearchRequest	16	static
+../user_code/APP/rfid/HW_rfid.c:65:13:HwRfidHeartRequest	16	static
+../user_code/APP/rfid/HW_rfid.c:74:13:HwRfidParse	24	static
+../user_code/APP/rfid/HW_rfid.c:115:14:GetHwRfidModel	4	static
+../user_code/APP/rfid/HW_rfid.c:120:6:HwRfidInit	4	static

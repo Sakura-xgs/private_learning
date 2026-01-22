@@ -1,0 +1,5 @@
+../user_code/APP/pos/pos.c:29:6:PosModuleSelect	16	static
+../user_code/APP/pos/pos.c:37:13:Pos_Request_Task	16	static
+../user_code/APP/pos/pos.c:57:13:PosDataProcess	16	static
+../user_code/APP/pos/pos.c:142:13:Pos_Parse_Task	24	static
+../user_code/APP/pos/pos.c:167:6:Pos_Init_Task	32	static

@@ -1,0 +1,16 @@
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:34:15:date_to_timestamp	64	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:54:13:timestamp_to_date	32	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:77:16:RTC_BinToBcd2	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:90:16:RTC_Bcd2ToBin	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:98:17:RTC_IIC_READ_ARRAY	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:122:17:RTC_IIC_WRITE_ARRAY	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:146:13:SetRealTime	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:169:13:GetRtcTime	8	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:195:12:Rtc_GetTimestamp	32	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:206:6:Rtc_SetTimestamp	64	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:229:6:SYS_GetDate	40	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:234:6:SYS_SetTimestamp	16	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:239:13:PCF8563Init	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:253:13:Ext_Rtc_Task	16	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:266:13:Ext_Rtc_Init	8	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:271:6:Ext_Rtc_Init_Task	24	static

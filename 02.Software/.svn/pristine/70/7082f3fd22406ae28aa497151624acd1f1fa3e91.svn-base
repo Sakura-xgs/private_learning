@@ -1,0 +1,172 @@
+/*
+ * PublicDefine.h
+ *
+ *  Created on: 2024年8月19日
+ *      Author: Bono
+ */
+
+#ifndef PUBLICDEFINE_H_
+#define PUBLICDEFINE_H_
+
+#include "stdio.h"
+
+//#define FREE_STACK_SPACE_CHECK_ENABLE
+//自检项全部正常标志
+#define SELF_CHECK_SUCCESS_FLAG  		0xFFU
+//调试模式
+#define DEBUG_MODE       				1U
+//出厂模式
+#define RELEASE_MODE     				2U
+//生产测试模式
+#define PRODUCTION_MODE					3U
+//故障注入模式
+#define FAULT_INJECTION_MODE			4U
+//枪数量
+#define GUNNUMBER		 				2U
+//桩编号限制
+#define PILE_NUM_MIN     				1U
+#define PILE_NUM_MAX     				4U
+//枪号限制
+#define GUN_NUM_MIN      				1U
+#define GUN_NUM_MAX      				8U
+//枪最大电流默认限制
+#define GUN_MAX_CUR_LIMIT   			250U //A
+//枪最小电流默认限制
+#define GUN_MIN_CUR_LIMIT   			0U   //A
+//枪最大电压默认限制
+#define GUN_MAX_VOL_LIMIT   			1000U//V
+//枪最小电压默认限制
+#define GUN_MIN_VOL_LIMIT   			150U  //V
+//外设插枪/工作中状态下任务周期
+#define WORKING_STATUS_TASK_PERIOD_MS  	150U
+//外设超时时间
+#define DEVICE_TIMEOUT_MS   		   	7000U
+
+#define UART_COMM_BUF_LEN				512U
+
+typedef unsigned char 		bl;
+typedef unsigned char 		BOOL;
+typedef unsigned char 		U8;
+typedef unsigned short int 	U16;
+typedef unsigned int 		U32;
+typedef unsigned long long 	U64;
+typedef signed char 		S8;
+typedef short int 			S16;
+typedef long int 			S32;
+typedef unsigned char 		byte;
+typedef unsigned short int 	word;
+typedef unsigned int 		dword;
+typedef U8 * 				P_U8;
+typedef S8 * 				P_S8;
+typedef U16 * 				P_U16;
+typedef S16 * 				P_S16;
+typedef U32 * 				P_U32;
+typedef S32 * 				P_S32;
+typedef float 				F32;
+typedef void * 				PVOID;
+
+#ifndef null
+  #define null (0)
+#endif
+
+#ifndef NULL
+  #define NULL (0)
+#endif
+
+#ifndef TRUE
+	#define TRUE  (BOOL)1
+#endif
+#ifndef FALSE
+	#define FALSE (BOOL)0
+#endif
+
+#define  GET_LOW_BYTE(a)				((U8)(a))
+#define  GET_HIGH_BYTE(a)				((U8)((a) >> 8))
+#define  GET_LOW_4_BYTE(a)				((U8)(a))
+#define  GET_MIDDLE_LOW_4_BYTE(a)		((U8)((a) >> 8))
+#define  GET_MIDDLE_HIGH_4_BYTE(a)		((U8)((a) >> 16))
+#define  GET_HIGH_4_BYTE(a)				((U8)((a) >> 24))
+
+/* Task priorities. */
+#define INIT_TASK_PRIO                  ( tskIDLE_PRIORITY + (UBaseType_t)3U )
+#define LED_TASK_PRIO                   ( tskIDLE_PRIORITY + (UBaseType_t)3U )
+#define SAVE_EEPROM_TASK_PRIO           ( tskIDLE_PRIORITY + (UBaseType_t)4U )
+#define GENERAL_TASK_PRIO				( tskIDLE_PRIORITY + (UBaseType_t)4U )
+#define IMPORTENT_TASK_TASK_PRIO		( tskIDLE_PRIORITY + (UBaseType_t)5U )
+#define TCP_TASK_PRIO					( tskIDLE_PRIORITY + (UBaseType_t)8U )
+#define STACK_OVER_FLOW_BUF_LEN			5
+
+typedef enum
+{
+	GUN_A = 0,
+	GUN_B = 1,
+	GUN_MAX_NUM = 2
+}Gun_Id_e;
+
+typedef struct
+{
+	U16 m_u16Signal;
+	S32 m_u32DefaultVal;
+	S32 m_u32MaxVal;
+	S32 m_u32MinVal;
+	U16 m_u16CanZoom;
+	S16 m_s16OffSet;
+}tag_signal;
+
+typedef struct
+{
+    U32 u32SigId;
+    S32 s32SigVal;
+}EEP_MSG;
+
+typedef union{
+	U16 unWhole_item;
+	struct
+	{
+		U16 eeprom_checkself_flag:1;
+		U16 imd_comm_flag_A:1;
+		U16 imd_comm_flag_B:1;
+		U16 meter_comm_flag_A:1;
+		U16 meter_comm_flag_B:1;
+		U16 pile_num_valid_flag:1;
+		U16 gun_num_valid_flag:1;
+		U16 hmi_comm_flag:1;
+		U16 reserve:8;
+	}sItem;
+}Self_Check_t;
+
+enum
+{
+    K1_ON 	= 0,
+	K1_OFF	= 1,
+	K2_ON 	= 2,
+	K2_OFF	= 3,
+	K3_ON 	= 4,
+	K3_OFF  = 5,
+	K4_ON	= 6,
+	K4_OFF	= 7,
+	K5_ON	= 8,
+	K5_OFF	= 9,
+	K6_ON	= 10,
+	K6_OFF	= 11,
+	K7_ON	= 12,
+	K7_OFF	= 13,
+	K8_ON	= 14,
+	K8_OFF	= 15
+};
+
+typedef enum
+{
+	SYS_STATUS_IDLE				= 0x0000,	//未定义系统工作状态
+	SYS_STATUS_NORMAL			= 0x55AA,	//系统在工作模式下
+	SYS_STATUS_SLEEP			= 0x5A5A,	//系统在休眠模式下
+	SYS_STATUS_SHUTTING_DOWN	= 0xAA55,	//系统即将关机
+	SYS_STATUS_POWER_OFF		= 0xAAA5,	//系统完成关机
+}SYS_WORKING_STATYS;
+
+extern U8 ucSN[32];
+extern Self_Check_t g_sSelf_check;
+#define UART_DEBUG_MSG 	   1
+#define USER_DEBUG_LEVEL   USER_INFO
+
+#endif /* PUBLICDEFINE_H_ */

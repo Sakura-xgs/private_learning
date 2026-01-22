@@ -1,0 +1,11 @@
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_gpio.h:176:24:GPIO_PinRead	16	static
+../user_code/APP/hmi/hmi.c:39:13:HmiModuleSelect	16	static
+../user_code/APP/hmi/hmi.c:63:6:HmiStartCharge	24	static
+../user_code/APP/hmi/hmi.c:117:6:HmiCancelCharge	24	static
+../user_code/APP/hmi/hmi.c:166:6:HmiStopCharge	24	static
+../user_code/APP/hmi/hmi.c:209:6:PileStatusResponse	192	static
+../user_code/APP/hmi/hmi.c:590:13:HmiDataProcess	16	static
+../user_code/APP/hmi/hmi.c:630:13:HmiCommCheck	16	static
+../user_code/APP/hmi/hmi.c:661:13:Hmi_COMM_CHECK_Task	16	static
+../user_code/APP/hmi/hmi.c:677:13:Hmi_Parse_Task	24	static
+../user_code/APP/hmi/hmi.c:708:6:Hmi_Init_Task	24	static

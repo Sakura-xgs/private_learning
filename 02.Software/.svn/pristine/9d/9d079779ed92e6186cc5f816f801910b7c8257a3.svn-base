@@ -1,0 +1,15 @@
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\CMSIS/core_cm7.h:2165:34:__NVIC_SystemReset	4	static
+../user_code/HAL/boot/boot.c:35:6:Boot_Init	8	static
+../user_code/HAL/boot/boot.c:114:5:crc16_ccitt_xmodem	32	static
+../user_code/HAL/boot/boot.c:130:5:compute_crc32	32	static
+../user_code/HAL/boot/boot.c:151:6:SystemResetFunc	16	static
+../user_code/HAL/boot/boot.c:165:6:blDetcetUpdataStep	24	static
+../user_code/HAL/boot/boot.c:208:6:WriteAppInterFg2Flash	280	static
+../user_code/HAL/boot/boot.c:244:6:ExtFlashClrBackupApp	16	static
+../user_code/HAL/boot/boot.c:260:6:UpdataFlashFunc	544	static
+../user_code/HAL/boot/boot.c:314:6:CheckExtFlashAppIntegFg	48	static
+../user_code/HAL/boot/boot.c:341:13:Updata_Function	16	static
+../user_code/HAL/boot/boot.c:393:13:Normal_Updata_Task	16	static
+../user_code/HAL/boot/boot.c:410:13:SuspendNormalUpdateTaskFunc	8	static
+../user_code/HAL/boot/boot.c:418:6:ResumeNormalUpdataTaskFunc	8	static
+../user_code/HAL/boot/boot.c:427:6:UpdateFuncInitTask	40	static

@@ -1,0 +1,115 @@
+﻿#include "Signal.h"
+#include "PublicDefine.h"
+
+
+const tag_signal SetSignalArry[] = 
+{
+	//SIGNALENNAME,                                     Default Value,Max Value,    Min Value,    Zoom,         Offset,       },//SignalChName
+	{CCU_SET_SIG_ID_BEGIN_FLAG,                        	0,            0,            0,            1,            0,            },//设置信号开始位置
+	{CCU_SET_SIG_ID_RESET_EVENT_FLASH_FG,              	0,            2147483647,   0,            1,            0,            },//初始化FLASH记录数据参数标志
+	{CCU_SET_SIG_ID_FLASH_HIS_WR_ADDR,                 	0,            2147483647,   0,            1,            0,            },//FLASH历史数据当前存储地址
+	{CCU_SET_SIG_ID_FLASH_ERR_WR_ADDR,                 	0,            2147483647,   0,            1,            0,            },//FLASH告警数据当前存储地址
+	{CCU_SET_SIG_ID_FLASH_HIS_RD_ADDR,                 	0,            2147483647,   0,            1,            0,            },//FLASH历史数据读取开始地址
+	{CCU_SET_SIG_ID_FLASH_ERR_RD_ADDR,                 	0,            2147483647,   0,            1,            0,            },//FLASH告警数据读取开始地址
+	{CCU_SET_SIG_ID_FLASH_HIS_SAVE_FULL_FLAG,          	0,            2147483647,   0,            1,            0,            },//FLASH历史数据存满标识
+	{CCU_SET_SIG_ID_FLASH_ERR_SAVE_FULL_FLAG,          	0,            2147483647,   0,            1,            0,            },//FLASH告警数据存满标识
+	{CCU_SET_SIG_ID_FLASH_HIS_DATA_RECORD_NUM,         	0,            2147483647,   0,            1,            0,            },//FLASH历史数据记录条数
+	{CCU_SET_SIG_ID_FLASH_ERR_DATA_RECORD_NUM,         	0,            2147483647,   0,            1,            0,            },//FLASH告警数据记录条数
+	{CCU_SET_SIG_ID_LIGHT_ON_TIME,                		0,            2147483647,   0,            1,            0,            },//照明灯开启时间
+	{CCU_SET_SIG_ID_LIGHT_OFF_TIME,                		0,            2147483647,   0,            1,            0,            },//照明灯关闭时间
+	{CCU_SET_SIG_ID_RESET_TIMES,                       	0,            2147483647,   0,            1,            0,            },//复位次数
+	{CCU_SET_SIG_ID_STARTUP_DAY,                       	0,            2147483647,   0,            1,            0,            },//上次开机日期(空、年、月、日)
+	{CCU_SET_SIG_ID_STARTUP_SEC,                       	0,            2147483647,   0,            1,            0,            },//上次开机时刻(空、时、分、秒)
+	{CCU_SET_SIG_ID_HIGH_FREQ_END_FLAG,                	0,            0,            0,            1,            0,            },//高频设置信号结束位置
+	{CCU_SET_SIG_ID_PILE_STORAGE_BRGIN_FLAG,           	0,            0,            0,            1,            0,            },//桩存储数据信号起始位置
+	{CCU_SET_SIG_ID_SOFTWARE_1_2_3_4,                  	0,            2147483647,   0,            1,            0,            },//充电桩软件版本(1、2、3、4位)
+	{CCU_SET_SIG_ID_SOFTWARE_5_6_7_8,                  	0,            2147483647,   0,            1,            0,            },//充电桩软件版本(5、6、7、8位)
+	{CCU_SET_SIG_ID_SOFTWARE_9_10_11_12,               	0,            2147483647,   0,            1,            0,            },//充电桩软件版本(9、10、11、12位)
+	{CCU_SET_SIG_ID_SOFTWARE_13_14_15_16,              	0,            2147483647,   0,            1,            0,            },//充电桩软件版本(13、14、15、16位)
+	{CCU_SET_SIG_ID_HARDWARE_1_2_3_4,                  	0,            2147483647,   0,            1,            0,            },//充电桩硬件版本(1、2、3、4位)
+	{CCU_SET_SIG_ID_HARDWARE_5_6_7_8,                  	0,            2147483647,   0,            1,            0,            },//充电桩硬件版本(5、6、7、8位)
+	{CCU_SET_SIG_ID_HARDWARE_9_10_11_12,               	0,            2147483647,   0,            1,            0,            },//充电桩硬件版本(9、10、11、12位)
+	{CCU_SET_SIG_ID_HARDWARE_13_14_15_16,              	0,            2147483647,   0,            1,            0,            },//充电桩硬件版本(13、14、15、16位)
+	{CCU_SET_SIG_ID_SN_NUMBER_1_2_3_4,                 	0,            2147483647,   0,            1,            0,            },//产品SN(1、2、3、4位)
+	{CCU_SET_SIG_ID_SN_NUMBER_5_6_7_8,                 	0,            2147483647,   0,            1,            0,            },//产品SN(5、6、7、8位)
+	{CCU_SET_SIG_ID_SN_NUMBER_9_10_11_12,              	0,            2147483647,   0,            1,            0,            },//产品SN(9、10、11、12位)
+	{CCU_SET_SIG_ID_SN_NUMBER_13_14_15_16,             	0,            2147483647,   0,            1,            0,            },//产品SN(13、14、15、16位)
+	{CCU_SET_SIG_ID_SN_NUMBER_17_18_19_20,             	0,            2147483647,   0,            1,            0,            },//产品SN(17、18、19、20位)
+	{CCU_SET_SIG_ID_SN_NUMBER_21_22_23_24,             	0,            2147483647,   0,            1,            0,            },//产品SN(21、22、23、24位)
+	{CCU_SET_SIG_ID_SN_NUMBER_25_26_27_28,             	0,            2147483647,   0,            1,            0,            },//产品SN(25、26、27、28位)
+	{CCU_SET_SIG_ID_EXT_EEPROM_TEST_VAL,               	0,            2147483647,   0,            1,            0,            },//外部eeprom功能测试信号
+	{CCU_SET_SIG_ID_FLAG,                              	0,            2147483647,   0,            1,            0,            },//平台配置桩属性标志位
+	{CCU_SET_SIG_ID_TEST_STATION_RECORD,               	0,            2147483647,   0,            1,            0,            },//测试工站信息记录
+	{CCU_SET_SIG_ID_CHARGE_ID_1_2_3_4,                 	0,            2147483647,   0,            1,            0,            },//charge id（1-4位）
+	{CCU_SET_SIG_ID_CHARGE_ID_5_6_7_8,                 	0,            2147483647,   0,            1,            0,            },//charge id（5-8位）
+	{CCU_SET_SIG_ID_CHARGE_ID_9_10_11_12,              	0,            2147483647,   0,            1,            0,            },//charge id（9-12位）
+	{CCU_SET_SIG_ID_CHARGE_ID_13_14_15_16,             	0,            2147483647,   0,            1,            0,            },//charge id（13-16位）
+	{CCU_SET_SIG_ID_CHARGE_ID_17_18_19_20,             	0,            2147483647,   0,            1,            0,            },//charge id（16-20位）
+	{CCU_SET_SIG_ID_CHARGE_ID_21_22_23_24,             	0,            2147483647,   0,            1,            0,            },//charge id（21-24位）
+	{CCU_SET_SIG_ID_CHARGE_ID_25_26_27_28,             	0,            2147483647,   0,            1,            0,            },//charge id（25-28位）
+	{CCU_SET_SIG_ID_CHARGE_ID_29_30_31_32,             	0,            2147483647,   0,            1,            0,            },//charge id（29-32位）
+	{CCU_SET_SIG_ID_ENABLE_LOCAL_BILL,                 	0,            2147483647,   0,            1,            0,            },//是否开启本地计费
+	{CCU_SET_SIG_ID_GUN_NUM,                           	0,            2147483647,   0,            1,            0,            },//桩编码
+	{CCU_SET_SIG_ID_USE_SCREEN_FLAG,                   	0,            2147483647,   0,            1,            0,            },//是否使用广告屏
+	{CCU_SET_SIG_ID_HMI_MODEL,                         	0,            2147483647,   0,            1,            0,            },//HMI型号
+	{CCU_SET_SIG_ID_USE_POS_FLAG,                      	0,            2147483647,   0,            1,            0,            },//是否使用POS
+	{CCU_SET_SIG_ID_POS_MODEL,                         	0,            2147483647,   0,            1,            0,            },//pos机型号
+	{CCU_SET_SIG_ID_USE_RFID_FLAG,                     	0,            2147483647,   0,            1,            0,            },//是否使用RFID
+	{CCU_SET_SIG_ID_RFID_MODEL,                        	0,            2147483647,   0,            1,            0,            },//刷卡板型号
+	{CCU_SET_SIG_ID_M1_KEY_MODE_FIRST,                 	0,            2147483647,   0,            1,            0,            },//M1卡第一块数据存储密码模式
+	{CCU_SET_SIG_ID_M1_SECTOR_FIRST,                   	0,            2147483647,   0,            1,            0,            },//M1卡第一块数据存储密码扇区
+	{CCU_SET_SIG_ID_M1_BLOCK_FIRST,                    	0,            2147483647,   0,            1,            0,            },//M1卡第一块数据存储密码块号
+	{CCU_SET_SIG_ID_M1_PASSWORD_FIRST_1_2_3_4,         	0,            2147483647,   0,            1,            0,            },//M1卡第一块数据存储密码秘钥1-4字节
+	{CCU_SET_SIG_ID_M1_PASSWORD_FIRST_5_6_7_8,         	0,            2147483647,   0,            1,            0,            },//M1卡第一块数据存储密码秘钥4-8字节
+	{CCU_SET_SIG_ID_M1_PASSWORD_FIRST_9_10_11_12,      	0,            2147483647,   0,            1,            0,            },//M1卡第一块数据存储密码秘钥9-12字节
+	{CCU_SET_SIG_ID_M1_KEY_MODE_SECOND,                	0,            2147483647,   0,            1,            0,            },//M1卡第二块数据存储密码模式
+	{CCU_SET_SIG_ID_M1_SECTOR_SECOND,                  	0,            2147483647,   0,            1,            0,            },//M1卡第二块数据存储密码模式
+	{CCU_SET_SIG_ID_M1_BLOCK_SECOND,                   	0,            2147483647,   0,            1,            0,            },//M1卡第二块数据存储密码模式
+	{CCU_SET_SIG_ID_M1_PASSWORD_SECOND_1_2_3_4,        	0,            2147483647,   0,            1,            0,            },//M1卡第二块数据存储密码秘钥1-4字节
+	{CCU_SET_SIG_ID_M1_PASSWORD_SECOND_5_6_7_8,        	0,            2147483647,   0,            1,            0,            },//M1卡第二块数据存储密码秘钥4-8字节
+	{CCU_SET_SIG_ID_M1_PASSWORD_SECOND_9_10_11_12,     	0,            2147483647,   0,            1,            0,            },//M1卡第二块数据存储密码秘钥9-12字节
+	{CCU_SET_SIG_ID_CC1_12V_MAX,                       	0,            2147483647,   0,            1,            0,            },//CCS1 12V上限值
+	{CCU_SET_SIG_ID_CC1_12V_MIN,                       	0,            2147483647,   0,            1,            0,            },//CCS1 12V下限值
+	{CCU_SET_SIG_ID_CC1_6V_MAX,                        	0,            2147483647,   0,            1,            0,            },//CCS1 6V上限值
+	{CCU_SET_SIG_ID_CC1_6V_MIN,                        	0,            2147483647,   0,            1,            0,            },//CCS1 6V下限值
+	{CCU_SET_SIG_ID_CC1_4V_MAX,                        	0,            2147483647,   0,            1,            0,            },//CCS1 4V上限值
+	{CCU_SET_SIG_ID_CC1_4V_MIN,                        	0,            2147483647,   0,            1,            0,            },//CCS1 4V下限值
+	{CCU_SET_SIG_ID_GUN_TYPE_A,                        	0,            2147483647,   0,            1,            0,            },//A枪类型
+	{CCU_SET_SIG_ID_GUN_ID_A,                          	0,            2147483647,   0,            1,            0,            },//A枪id
+	{CCU_SET_SIG_ID_GUN_MAX_OUTPUT_VOL_A,              	0,            2147483647,   0,            1,            0,            },//枪最大输出电压
+	{CCU_SET_SIG_ID_GUN_MIN_OUTPUT_VOL_A,              	0,            2147483647,   0,            1,            0,            },//枪最小输出电压
+	{CCU_SET_SIG_ID_GUN_MAX_OUTPUT_CUR_A,              	0,            2147483647,   0,            1,            0,            },//枪最大输出电流
+	{CCU_SET_SIG_ID_GUN_MIN_OUTPUT_CUR_A,              	0,            2147483647,   0,            1,            0,            },//枪最小输出电流
+	{CCU_SET_SIG_ID_METER_MODEL_A,                     	0,            2147483647,   0,            1,            0,            },//电表型号
+	{CCU_SET_SIG_ID_SECC_MODEL_A,                      	0,            2147483647,   0,            1,            0,            },//secc型号
+	{CCU_SET_SIG_ID_IMD_MODEL_A,                       	0,            2147483647,   0,            1,            0,            },//imd型号
+	{CCU_SET_SIG_ID_WARN_TEMP_A,                       	0,            2147483647,   0,            1,            0,            },//A枪告警枪温
+	{CCU_SET_SIG_ID_FAULT_TEMP_A,                      	0,            2147483647,   0,            1,            0,            },//A枪故障枪温
+	{CCU_SET_SIG_ID_DIFF_TEMP_A,                       	0,            2147483647,   0,            1,            0,            },//A枪枪温温差阈值
+	{CCU_SET_SIG_ID_GUN_TYPE_B,                        	0,            2147483647,   0,            1,            0,            },//B枪类型
+	{CCU_SET_SIG_ID_GUN_ID_B,                          	0,            2147483647,   0,            1,            0,            },//B枪id
+	{CCU_SET_SIG_ID_GUN_MAX_OUTPUT_VOL_B,              	0,            2147483647,   0,            1,            0,            },//枪最大输出电压
+	{CCU_SET_SIG_ID_GUN_MIN_OUTPUT_VOL_B,              	0,            2147483647,   0,            1,            0,            },//枪最小输出电压
+	{CCU_SET_SIG_ID_GUN_MAX_OUTPUT_CUR_B,              	0,            2147483647,   0,            1,            0,            },//枪最大输出电流
+	{CCU_SET_SIG_ID_GUN_MIN_OUTPUT_CUR_B,              	0,            2147483647,   0,            1,            0,            },//枪最小输出电流
+	{CCU_SET_SIG_ID_METER_MODEL_B,                     	0,            2147483647,   0,            1,            0,            },//电表型号
+	{CCU_SET_SIG_ID_SECC_MODEL_B,                      	0,            2147483647,   0,            1,            0,            },//secc型号
+	{CCU_SET_SIG_ID_IMD_MODEL_B,                       	0,            2147483647,   0,            1,            0,            },//imd型号
+	{CCU_SET_SIG_ID_WARN_TEMP_B,                       	0,            2147483647,   0,            1,            0,            },//B枪告警枪温
+	{CCU_SET_SIG_ID_FAULT_TEMP_B,                      	0,            2147483647,   0,            1,            0,            },//B枪故障枪温
+	{CCU_SET_SIG_ID_DIFF_TEMP_B,                       	0,            2147483647,   0,            1,            0,            },//B枪枪温温差阈值
+	{CCU_SET_SIG_ID_PILE_STORAGE_END_FLAG,             	0,            0,            0,            1,            0,            },//桩存储数据信号起始位置
+	{CCU_SET_SIG_ID_OCCUPATION_FEE_UNIT_PRICE,         	0,            2147483647,   0,            1,            0,            },//占位费单价
+	{CCU_SET_SIG_ID_OCCUPATION_FEE_A,                  	0,            2147483647,   0,            1,            0,            },//占位费
+	{CCU_SET_SIG_ID_OCCUPATION_FEE_B,                  	0,            2147483647,   0,            1,            0,            },//占位费
+	{CCU_SET_SIG_ID_GRACE_PERIOD,                      	0,            2147483647,   0,            1,            0,            },//宽限时间
+	{CCU_SET_SIG_ID_ADVANCE_CHARGE,                    	0,            2147483647,   0,            1,            0,            },//预扣费金额
+	{CCU_SET_SIG_ID_CHARGE_PRICE_UNIT_PRICE,           	0,            2147483647,   0,            1,            0,            },//充电单价
+	{CCU_SET_SIG_ID_CHARGE_PRICE_A,                    	0,            2147483647,   0,            1,            0,            },//充电费用
+	{CCU_SET_SIG_ID_CHARGE_PRICE_B,                    	0,            2147483647,   0,            1,            0,            },//充电费用
+	{CCU_SET_SIG_ID_PAYMENT_FLAG_A,                    	0,            2147483647,   0,            1,            0,            },//A枪扣款标志位
+	{CCU_SET_SIG_ID_PAYMENT_FLAG_B,                    	0,            2147483647,   0,            1,            0,            },//B枪扣款标志位
+	{CCU_SET_SIG_ID_END_FLAG,                          	0,            0,            0,            1,            0,            },//设置信号结束位置
+};
+
+

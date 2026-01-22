@@ -1,0 +1,4 @@
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\drivers/fsl_gpio.h:176:24:GPIO_PinRead	16	static
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\drivers/fsl_qtmr.h:424:20:QTMR_StartTimer	24	static
+../user_code/APP/fan/fan_pwm.c:57:13:SetFan_PeriodAndDuty_Task	48	static
+../user_code/APP/fan/fan_pwm.c:97:6:Fan_Pwm_Init_Task	40	static

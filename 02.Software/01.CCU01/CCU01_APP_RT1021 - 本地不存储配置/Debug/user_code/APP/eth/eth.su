@@ -1,0 +1,6 @@
+../user_code/APP/eth/eth.c:132:6:tcp_client_task	80	static
+../user_code/APP/eth/eth.c:246:13:PCU_EventAnalysis	16	static
+../user_code/APP/eth/eth.c:260:13:PcRecOneData	24	static
+../user_code/APP/eth/eth.c:307:13:Tcp_analysis_task	24	static
+../user_code/APP/eth/eth.c:336:13:ethernet_link_check_task	32	static
+../user_code/APP/eth/eth.c:384:6:user_eth_init	16	static

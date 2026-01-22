@@ -1,0 +1,12 @@
+../user_code/APP/charge_control/GB_27930_parse_A.c:38:13:GB_RecvMultipackTimeoutCb_A	24	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:79:13:GB_RecvMultipackTimerTreat_A	32	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:206:6:GB_BrmPrase	24	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:254:6:GB_BcpPrase	48	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:286:6:GB_BcsPrase	32	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:320:6:GB_BroMessageProcess	16	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:360:6:GB_BclMessageProcess	48	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:425:6:GB_BsmMessageProcess	40	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:541:6:GB_BstMessageProcess	24	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:679:6:GB_BemTimeoutProcess	16	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:752:13:GB_HandleEBMultipack_A	32	static
+../user_code/APP/charge_control/GB_27930_parse_A.c:837:6:GBCAN1Parse	32	static

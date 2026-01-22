@@ -1,0 +1,6 @@
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_adc.h:275:24:ADC_GetChannelConversionValue	16	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_adc.h:299:24:ADC_GetChannelStatusFlags	16	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_adc.h:355:20:ADC_EnableHardwareTrigger	16	static
+../user_code/APP/poll_adc/poll_adc.c:42:12:Median_average_filter	200	static
+../user_code/APP/poll_adc/poll_adc.c:94:13:ADC_POLLING_TASK	88	static
+../user_code/APP/poll_adc/poll_adc.c:184:6:Poll_Adc_Init_Task	24	static

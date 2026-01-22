@@ -1,0 +1,5 @@
+../user_code/APP/rfid/rfid.c:29:6:RfidModuleSelect	16	static
+../user_code/APP/rfid/rfid.c:37:13:RfidDataProcess	16	static
+../user_code/APP/rfid/rfid.c:123:13:Rfid_Parse_Task	24	static
+../user_code/APP/rfid/rfid.c:148:13:Rfid_Request_Task	16	static
+../user_code/APP/rfid/rfid.c:178:6:Rfid_Init_Task	32	static

@@ -1,0 +1,959 @@
+/*
+ * emergency_fault_IF.h
+ *
+ *  Created on: 2024年11月14日
+ *      Author: qjwu
+ */
+#ifndef APP_FAULT_EMERGENCY_FAULT_IF_H_
+#define APP_FAULT_EMERGENCY_FAULT_IF_H_
+
+#include "PublicDefine.h"
+#include "charge_process_IF.h"
+
+#define COMM_LOST   		 TRUE
+
+#pragma pack(1)
+
+typedef enum
+{
+	BIT8_STRUCT 	= 0,
+	BIT16_STRUCT	= 1,
+	BIT32_STRUCT	= 2,
+	BIT64_STRUCT	= 3
+}StructType;
+
+//拔枪可恢复故障
+typedef union
+{
+	U32 uiWhole_flag;
+    struct
+    {
+		U32 precharge_timeout:1;		//预充超时故障
+		U32 insulation_timeout:1;		//绝缘检测升压超时故障
+		U32 positive_insulation:1;		//正极绝缘阻值故障
+		U32 negative_insulation:1;		//负极绝缘阻值故障
+		U32 imd_discharge_timeout:1;	//绝缘检测泄放超时
+		U32 gun_over_cur:1;				//充电过流故障
+		U32 gun_over_vol:1;				//充电过压故障
+		U32 gun_under_vol:1;			//充电欠压
+		U32 imd_vol_less_than_dcdc_min_vol:1;//绝缘监测电压小于模块最低输出电压
+		U32 unBms_insulation_error:1;	//BMS绝缘监测故障
+		U32 unBms_conn_over_temp:1;		//BMS输出连接器过温
+		U32 unBms_cell_over_temp:1;		//BMS元件输出过温
+		U32 unBms_charge_conn_error:1;	//BMS充电连接器故障
+		U32 unBms_bat_over_temp:1;		//BMS电池组温度过高
+		U32 unBms_relay_error:1;		//BMS高压继电器故障
+		U32 unBms_over_cur:1;			//BMS电流过大
+		U32 unBms_vol_err:1;			//BMS电压异常
+		U32 unBms_check_p2_err:1;		//BMS P2监测电故障
+		U32 unBms_other_fault:1;		//BMS其他故障
+		U32 unCp_fault:1;				//充电中CP错误
+		U32 unBms_vol_neq_msg_vol:1;	//bms电池电压与报文电压不一致
+		U32 unBms_SOC_Abnormal:1;		//BMS SOC异常
+		U32 unBms_single_vol_Abnormal:1;	//BMS单体电压异常异常
+		U32 unTimeout_reconnect_reach_limit:1;//超时重连超过3次
+		U16 unCig_gun_relay_sticking:1;	//CIG枪锁继电器粘连
+		U16 unCig_gun_relay_close:1;	//CIG枪锁继电器驱动失败
+		U16 unCig_assist_relay_close:1;	//CIG辅源枪锁继电器驱动失败
+		U16 unCig_assist_relay_sticking:1;//CIG辅源继电器粘连
+
+		U32 reserve:4;
+    }sItem;
+}Recoverable_Gun_Fault_t;
+
+enum
+{
+    FAULT_PRECHARGE_TIMEOUT 	= 0,
+    FAULT_INSULATION_TIMEOUT	= 1,
+    FAULT_POSITIVE_INSULATION	= 2,
+    FAULT_NEGATIVE_INSULATION	= 3,
+    FAULT_IMD_DISCHARGE_TIMEOUT	= 4,
+    FAULT_GUN_OVER_CUR			= 5,
+    FAULT_GUN_OVER_VOL			= 6,
+    FAULT_GUN_UNDER_VOL			= 7,
+    FAULT_IMD_VOL_LESS_THAN_DCDC_MIN_VOL = 8,
+	FAULT_BMS_INSULATION_ERROR	= 9,
+	FAULT_BMS_CONN_OVER_TEMP	= 10,
+	FAULT_BMS_CELL_OVER_TEMP	= 11,
+	FAULT_BMS_CHARGE_CONN_ERROR	= 12,
+	FAULT_BMS_BAT_OVER_TEMP		= 13,
+	FAULT_BMS_RELAY_ERROR		= 14,
+	FAULT_BMS_OVER_CUR			= 15,
+	FAULT_BMS_VOL_ERR			= 16,
+	FAULT_BMS_CHECK_P2_ERROR	= 17,
+	FAULT_BMS_OTHER_FAULT		= 18,
+	FAULT_CP_FAULT				= 19,
+	FAULT_BMS_VOL_NEQ_MSG_VOL	= 20,
+	FAULT_BMS_SOC_ABNORMAL		= 21,
+	FAULT_BMS_SINGLE_VOL_ABNORMAL	= 22,
+	FAULT_TIMEOUT_RECONNECT_REACH_LIMIT = 23,
+	FAULT_CIG_GUN_RELAY_STICKING		= 24,//CIG枪锁继电器粘连
+	FAULT_CIG_GUN_RELAY_CLOSE			= 25,//CIG枪锁继电器驱动失败
+	FAULT_CIG_ASSIST_RELAY_CLOSE		= 26,//CIG辅源枪锁继电器驱动失败
+	FAULT_CIG_ASSIST_RELAY_STICKING		= 27//CIG辅源继电器粘连
+};
+
+//拔枪不可恢复故障
+typedef union
+{
+	U32 uiWhole_flag;
+    struct
+    {
+		U32 precharge_circuit:1;		//预充回路故障
+		U32 positive_relay_sticking:1;	//正极继电器粘连
+		U32 positive_relay_close:1;		//正极继电器无法闭合
+		U32 negative_relay_sticking:1;	//负极继电器粘连
+		U32 negative_relay_close:1;		//负极继电器无法闭合
+		U32 blown_fuse:1;				//熔断器熔断
+		U32 start_vol_more_than_safe_vol:1;//启动时外侧有明显电压（>10V）
+		U32 bms_bat_reverse:1;			//电池反接故障
+		U32 meter_comm_lost:1;			//电表通讯丢失
+		U32 imd_comm_lost:1;			//IMD通讯丢失
+		U32 secc_comm_lost:1;			//SECC通讯丢失
+		U32 positive_gun_over_tmp:1;	//正极枪温过高故障
+		U32 negative_gun_over_tmp:1;	//负极枪温过高故障
+		U16 reserve1:1;					//PCU下发故障
+		U32 reserve:18;
+    }sItem;
+}General_Gun_Fault_t;
+
+// 枚举类型，用于标识位域
+enum
+{
+    FAULT_PRECHARGE_CIRCUIT				= 0,//预充回路故障
+    FAULT_POSITIVE_RELAY_STICKING		= 1,//正极继电器粘连
+    FAULT_POSITIVE_RELAY_CLOSE			= 2,//正极继电器无法闭合
+    FAULT_NEGATIVE_RELAY_STICKING		= 3,//负极继电器粘连
+    FAULT_NEGATIVE_RELAY_CLOSE			= 4,//负极继电器无法闭合
+    FAULT_BLOWN_FUSE					= 5,//熔断器熔断
+    FAULT_START_VOL_MORE_THAN_SAFE_VOL 	= 6,//启动时外侧电压大于安全电压（60V）
+    FAULT_BMS_BAT_REVERSE				= 7,//反接故障
+    FAULT_METER_COMM_LOST				= 8,//电表通讯丢失
+    FAULT_IMD_COMM_LOST					= 9,//IMD通讯丢失
+    FAULT_SECC_COMM_LOST				= 10,//SECC通讯丢失
+    FAULT_POSITIVE_GUN_OVER_TMP			= 11,//正极枪温过高故障
+    FAULT_NEGATIVE_GUN_OVER_TMP			= 12,//负极枪温过高故障
+	RESERVE1							= 13//PCU下发故障，不上传
+};
+
+//PCU端导致单枪故障（不上传状态）
+typedef union
+{
+	U8 ucWhole_flag;
+    struct
+    {
+		U8 PCU_cause_gun_error:1;	//PCU故障导致单枪故障
+		U8 reserve:7;
+    }sItem;
+}Unnecessary_upload_Gun_Fault_t;
+
+enum
+{
+	PCU_CAUSE_GUN_ERROR = 0
+};
+
+typedef struct
+{
+	Recoverable_Gun_Fault_t sRecoverable_fault;
+	General_Gun_Fault_t sGeneral_fault;
+	Unnecessary_upload_Gun_Fault_t sUnnecessary_upload_fault;
+}Gun_Fault_t;
+
+//枪可恢复告警
+typedef union
+{
+	U32 uiWhole_flag;
+    struct
+    {
+    	U32 positive_insulation:1;		//正极绝缘阻值告警
+    	U32 negative_insulation:1;		//负极绝缘阻值告警
+    	U32 gun_tmp_diff:1;				//枪温监测点差值过大警告
+    	U32 gun_return_timeout:1;		//充电结束枪长时间不归位
+    	U32 positive_gun_over_tmp:1;	//正极枪温过高告警
+    	U32 negative_gun_over_tmp:1;	//负极枪温过高告警
+    	U32 gun_over_cur:1;				//充电过流告警
+    	U32 gun_over_vol:1;				//充电过压告警
+    	U32 CCU_CRM_00_timeout:1;		//CCU CRM_00超时
+    	U32 CCU_CRM_AA_timeout:1;		//CCU CRM_AA超时
+    	U32 CCU_CML_CTS_AA_timeout:1;	//CCU CML_CTS超时
+    	U32 CCU_CR0_timeout:1;			//CCU CR0超时
+    	U32 CCU_CCS_timeout:1;			//CCU CCS超时
+    	U32 CCU_CST_timeout:1;			//CCU CST超时
+    	U32 CCU_CSD_timeout:1;			//CCU CSD超时
+    	U32 BMS_BRM_timeout:1;			//BMS BRM超时
+    	U32 RKN_comm_timeout:1;			//瑞凯诺通讯断开
+    	U32 BMS_BCP_timeout:1;			//BMS BCP超时
+    	U32 BMS_BRO_timeout:1;			//BMS BRO超时
+    	U32 BMS_BSM_timeout:1;			//BMS BSM超时
+    	U32 BMS_BCS_timeout:1;			//BMS BCS超时
+    	U32 BMS_BCL_timeout:1;			//BMS BCL超时
+    	U32 BMS_BST_timeout:1;			//BMS BST超时
+    	U32 BMS_BSD_timeout:1;			//BMS BSD超时
+    	U32 reserve:8;
+    }sItem;
+}Recoverable_Gun_Warn_t;
+
+// 枚举类型，表示告警类型
+enum
+{
+    WARNING_POSITIVE_INSULATION 	= 0,// 正极绝缘阻值告警
+    WARNING_NEGATIVE_INSULATION		= 1,// 负极绝缘阻值告警
+    WARNING_GUN_TMP_DIFF			= 2,// 枪温监测点差值过大警告
+    WARNING_GUN_RETURN_TIMEOUT		= 3,// 充电结束枪长时间不归位
+    WARNING_POSITIVE_GUN_OVER_TMP	= 4,// 正极枪温过高告警
+    WARNING_NEGATIVE_GUN_OVER_TMP	= 5,// 负极枪温过高告警
+    WARNING_GUN_OVER_CUR			= 6,// 充电过流告警
+    WARNING_GUN_OVER_VOL			= 7, // 充电过压告警
+	WARNING_CCU_CRM00_TIMEOUT		= 8,
+	WARNING_CCU_CRMAA_TIMEOUT		= 9,
+	WARNING_CCU_CML_CTS_TIMEOUT		= 10,
+	WARNING_CCU_CRO_TIMEOUT			= 11,
+	WARNING_CCU_CCS_TIMEOUT			= 12,
+	WARNING_CCU_CST_TIMEOUT			= 13,
+	WARNING_CCU_CSD_TIMEOUT			= 14,
+	WARNING_BMS_BRM_TIMEOUT			= 15,
+	WARNING_RKN_COMM_TIMEOUT		= 16,
+	WARNING_BMS_BCP_TIMEOUT			= 17,
+	WARNING_BMS_BRO_TIMEOUT			= 18,
+	WARNING_BMS_BSM_TIMEOUT			= 19,
+	WARNING_BMS_BCL_TIMEOUT			= 20,
+	WARNING_BMS_BCS_TIMEOUT			= 21,
+	WARNING_BMS_BST_TIMEOUT			= 22,
+	WARNING_BMS_BSD_TIMEOUT			= 23
+};
+
+typedef struct
+{
+	Recoverable_Gun_Warn_t sRecoverable_warn;
+}Gun_Warn_t;
+
+//SECC故障：1-8字节
+typedef union
+{
+	U64 u64Whole_flag;
+    struct
+    {
+		U64 gq_sig_error_cp:1;
+		U64 gq_received_all_stop:1;
+		U64 gq_j1772_error_unknown_state:1;
+		U64 gq_chademo_error_unknown_state:1;
+		U64 gq_chademo_rx_error_unknown_state:1;
+		U64 gq_chademo_tx_error_unknown_state:1;
+    	U64 gq_init_error_unknown_state:1;
+    	U64 gq_wait_error_unknown_state:1;
+    	U64 gq_slac_error_unknown_state:1;
+    	U64 gq_sdp_error_unknown_state:1;
+    	U64 gq_sdp_bind_error_unknown_state:1;
+    	U64 gq_v2g_accept_unknown_state:1;
+    	U64 gq_v2g_handshake_unknown_state:1;
+    	U64 reserve:1;
+    	U64 gq_init_error_general:1;
+    	U64 gq_init_error_ifaddr:1;
+    	U64 gq_init_error_thread:1;
+    	U64 gq_init_error_openchannel:1;
+    	U64 gq_slac_error_init:1;
+    	U64 gq_init_error_key:1;
+    	U64 gq_slac_error_general:1;
+    	U64 gq_slac_error_timer_init:1;
+    	U64 gq_slac_error_timer_timeout:1;
+    	U64 gq_slac_error_timer_misc:1;
+    	U64 gq_slac_error_param_timeout:1;
+    	U64 gq_slac_error_param_socket:1;
+    	U64 gq_slac_error_starttten_char_timeout:1;
+    	U64 gq_slac_error_mnbc_sound_timeout:1;
+    	U64 gq_slac_error_atten_char_timeout:1;
+    	U64 gq_slac_error_atten_char_socket:1;
+    	U64 gq_slac_error_validate_1_timeout:1;
+    	U64 gq_slac_error_validate_1_socket:1;
+    	U64 gq_slac_error_validate_2_timeout:1;
+    	U64 gq_slac_error_validate_2_socket:1;
+    	U64 gq_slac_error_bcb_toggle_timeout:1;
+    	U64 gq_slac_error_match_timeout:1;
+    	U64 gq_slac_error_match_socket:1;
+    	U64 gq_slac_error_read_socket:1;
+    	U64 gq_slac_error_set_key:1;
+    	U64 gq_slac_error_link_detect:1;
+    	U64 gq_sdp_error_general:1;
+    	U64 gq_sdp_error_init_socket:1;
+    	U64 gq_sdp_error_init_sockopt1:1;
+    	U64 gq_sdp_error_init_sockopt2:1;
+    	U64 gq_sdp_error_init_bind:1;
+    	U64 gq_sdp_error_thread_socket1:1;
+    	U64 gq_sdp_error_thread_socket2:1;
+    	U64 gq_sdp_error_timeout:1;
+    	U64 gq_din_error_general:1;
+    	U64 gq_din_error_init_socket:1;
+    	U64 gq_din_error_init_bind:1;
+    	U64 gq_din_error_init_listen:1;
+    	U64 gq_din_error_init_select:1;
+    	U64 gq_din_error_init_accept:1;
+    	U64 gq_din_error_timeout:1;
+    	U64 gq_din_error_v2gtp_header:1;
+    	U64 gq_din_error_v2gtp_header_len:1;
+    	U64 gq_din_error_decode_exi:1;
+    	U64 gq_din_error_create_response:1;
+    	U64 gq_din_error_encode_exi:1;
+    	U64 gq_din_error_v2gtp_header_write:1;
+    	U64 gq_din_error_socket_exception:1;
+    	U64 gq_din_error_socket_send:1;
+    	U64 gq_din_error_no_protocol:1;
+    }sItem;
+}Secc_Fault0_63_t;
+// 枚举类型 GQErrorStatus 的定义
+enum
+{
+    GQ_ERROR_SIG_ERROR_CP = 0,              //SIG错误CP
+    GQ_ERROR_RECEIVED_ALL_STOP = 1,          //收到所有停止
+    GQ_ERROR_J1772_UNKNOWN_STATE = 2,        //J1772 错误未知状态
+    GQ_ERROR_CHADEMO_UNKNOWN_STATE = 3,      //CHADEMO 错误未知状态
+    GQ_ERROR_CHADEMO_RX_UNKNOWN_STATE = 4,   //CHADEMO RX 错误未知状态
+    GQ_ERROR_CHADEMO_TX_UNKNOWN_STATE = 5,   //CHADEMO TX 错误未知状态
+    GQ_ERROR_INIT_UNKNOWN_STATE = 6,         //初始化错误未知状态
+    GQ_ERROR_WAIT_UNKNOWN_STATE = 7,         //等待错误未知状态
+    GQ_ERROR_SLAC_UNKNOWN_STATE = 8,         //SLAC 错误未知状态
+    GQ_ERROR_SDP_UNKNOWN_STATE = 9,          //SDP 错误未知状态
+    GQ_ERROR_SDP_BIND_UNKNOWN_STATE = 10,    //SDP 绑定错误未知状态
+    GQ_ERROR_V2G_ACCEPT_UNKNOWN_STATE = 11,  //假设这是 V2G 接受过程中的未知状态
+    GQ_ERROR_V2G_HANDSHAKE_UNKNOWN_STATE = 12, //新增的 V2G 握手过程中的未知状态
+    RESERVE = 13,                            //
+    GQ_ERROR_INIT_GENERAL = 14,              //初始化过程中的通用错误
+    GQ_ERROR_INIT_IFADDR = 15,               //初始化过程中的接口地址错误
+    GQ_ERROR_INIT_THREAD = 16,               //初始化线程时的错误
+    GQ_ERROR_INIT_OPENCHANNEL = 17,          //初始化打开通道时的错误
+    GQ_ERROR_SLAC_INIT = 18,                 //SLAC 初始化过程中的错误
+    GQ_ERROR_INIT_KEY = 19,                  //初始化密钥时的错误
+    GQ_ERROR_SLAC_GENERAL = 20,              //SLAC 通用错误
+    GQ_ERROR_SLAC_TIMER_INIT = 21,           //SLAC 定时器初始化错误
+    GQ_ERROR_SLAC_TIMER_TIMEOUT = 22,        //SLAC 定时器超时错误
+    GQ_ERROR_SLAC_TIMER_MISC = 23,           //SLAC 定时器其他错误
+    GQ_ERROR_SLAC_PARAM_TIMEOUT = 24,        //SLAC 参数超时错误
+    GQ_ERROR_SLAC_PARAM_SOCKET = 25,         //SLAC 参数套接字错误
+    GQ_ERROR_SLAC_STARTTTEN_CHAR_TIMEOUT = 26, //SLAC 起始字符超时错误
+    GQ_ERROR_SLAC_MNBC_SOUND_TIMEOUT = 27,   //SLAC MNBC 声音超时错误
+    GQ_ERROR_SLAC_ATTEN_CHAR_TIMEOUT = 28,   //SLAC 衰减字符超时错误
+    GQ_ERROR_SLAC_ATTEN_CHAR_SOCKET = 29,    //SLAC 衰减字符套接字错误
+    GQ_ERROR_SLAC_VALIDATE_1_TIMEOUT = 30,   //SLAC 验证1超时错误
+    GQ_ERROR_SLAC_VALIDATE_1_SOCKET = 31,    //SLAC 验证1套接字错误
+    GQ_ERROR_SLAC_VALIDATE_2_TIMEOUT = 32,   //SLAC 验证2超时错误
+    GQ_ERROR_SLAC_VALIDATE_2_SOCKET = 33,    //SLAC 验证2套接字错误
+    GQ_ERROR_SLAC_BCB_TOGGLE_TIMEOUT = 34,   //SLAC BCB 切换超时错误
+    GQ_ERROR_SLAC_MATCH_TIMEOUT = 35,        //SLAC 匹配超时错误
+    GQ_ERROR_SLAC_MATCH_SOCKET = 36,         //SLAC 匹配套接字错误
+    GQ_ERROR_SLAC_READ_SOCKET = 37,          //SLAC 读取套接字错误
+    GQ_ERROR_SLAC_SET_KEY = 38,              //SLAC 设置密钥错误
+    GQ_ERROR_SLAC_LINK_DETECT = 39,          //SLAC 链路检测错误
+    GQ_ERROR_SDP_GENERAL = 40,               //SDP 通用错误
+    GQ_ERROR_SDP_INIT_SOCKET = 41,           //SDP 初始化套接字错误
+    GQ_ERROR_SDP_INIT_SOCKOPT1 = 42,         //SDP 初始化套接字选项1错误
+    GQ_ERROR_SDP_INIT_SOCKOPT2 = 43,         //SDP 初始化套接字选项2错误
+    GQ_ERROR_SDP_INIT_BIND = 44,             //SDP 初始化绑定错误
+    GQ_ERROR_SDP_THREAD_SOCKET1 = 45,        //SDP 线程套接字1错误
+    GQ_ERROR_SDP_THREAD_SOCKET2 = 46,        //SDP 线程套接字2错误
+    GQ_ERROR_SDP_TIMEOUT = 47,               //SDP 超时错误
+    GQ_ERROR_DIN_GENERAL = 48,               //DIN 通用错误
+    GQ_ERROR_DIN_INIT_SOCKET = 49,           //DIN 初始化套接字错误
+    GQ_ERROR_DIN_INIT_BIND = 50,             //DIN 初始化绑定错误
+    GQ_ERROR_DIN_INIT_LISTEN = 51,           //DIN 初始化监听错误
+    GQ_ERROR_DIN_INIT_SELECT = 52,           //DIN 初始化选择错误
+    GQ_ERROR_DIN_INIT_ACCEPT = 53,           //DIN 初始化接受错误
+    GQ_ERROR_DIN_TIMEOUT = 54,               //DIN 超时错误
+    GQ_ERROR_DIN_V2GTP_HEADER = 55,          //DIN V2GTP 头错误
+    GQ_ERROR_DIN_V2GTP_HEADER_LEN = 56,      //DIN V2GTP 头长度错误
+    GQ_ERROR_DIN_DECODE_EXI = 57,            //DIN 解码 EXI 错误
+    GQ_ERROR_DIN_CREATE_RESPONSE = 58,       //DIN 创建响应错误
+    GQ_ERROR_DIN_ENCODE_EXI = 59,            //DIN 编码 EXI 错误
+    GQ_ERROR_DIN_V2GTP_HEADER_WRITE = 60,    //DIN V2GTP 头写入错误
+    GQ_ERROR_DIN_SOCKET_EXCEPTION = 61,      //DIN 套接字异常错误
+    GQ_ERROR_DIN_SOCKET_SEND = 62,           //DIN 套接字发送错误
+    GQ_ERROR_DIN_NO_PROTOCOL = 63,           //DIN 无协议错误
+};
+
+//SECC故障：9-16字节
+typedef union
+{
+	U64 u64Whole_flag;
+    struct
+    {
+    	U64 ev_timeout_can_data:1;
+    	U64 gq_din_shutdown_by_evse:1;
+    	U64 gq_din_failed_response:1;
+    	U64 gq_din_sequence_error:1;
+    	U64 gq_din_signature_error:1;
+    	U64 gq_din_unknown_session:1;
+    	U64 gq_din_sudden_stop_by_secc:1;
+    	U64 gq_din_stop_by_secc:1;
+    	U64 gq_din_no_request_from_ev:1;
+    	U64 gq_din_ev_do_not_stop:1;
+    	U64 gq_v2g_comm_port_may_lost:1;
+    	U64 gq_can_loss_detect_error:1;
+    	U64 gq_can_crmaa_timeout_error:1;
+    	U64 gq_can_crm00_timeout_error:1;
+    	U64 gq_can_ctscml_timeout_error:1;
+    	U64 gq_can_croaa_timeout_error:1;
+    	U64 gq_can_cst_timeout_error:1;
+    	U64 gq_can_ccs_timeout_error:1;
+    	U64 gq_can_csd_timeout_error:1;
+    	U64 gq_din_emergency_stop_by_secc:1;
+    	U64 gq_din_stop_by_charger:1;
+    	U64 gq_can_brm_timeout_error:1;
+    	U64 gq_can_bcp_timeout_error:1;
+    	U64 gq_can_bro_timeout_error:1;
+    	U64 gq_can_bcs_timeout_error:1;
+    	U64 gq_can_bcl_timeout_error:1;
+    	U64 gq_can_bst_timeout_error:1;
+    	U64 gq_can_bsd_timeout_error:1;
+    	U64 ev_resstemperatureinhibit:1;
+    	U64 ev_failed_evshiftposition:1;
+    	U64 ev_chargerconnectorlockfault:1;
+    	U64 ev_failed_evressmalfunction:1;
+    	U64 ev_chargingcurrentdifferential:1;
+    	U64 ev_chargingvoltageoutofrange:1;
+    	U64 ev_chargingsystemincompatibility:1;
+    	U64 ev_nodata:1;
+    	U64 emergency_charger_open_contactor:1;
+    	U64 gq_sig_error_cp_pp:1;
+		U64 gq_v2g_error_unknown_state:1;
+		U64 gq_slac_error_init:1;
+		U64 gq_chm_timeout:1;
+		U64 gq_din_received_cst:1;
+		U64 gq_din_stop_by_ev:1;
+		U64 gq_din_received_cem:1;
+		U64 gq_cp_state_b_2seconds:1;
+		U64 gq_cp_state_c_2seconds:1;
+		U64 gq_detect_cp_zero:1;
+		U64 gq_detect_pp_unplug:1;
+		U64 gq_detect_cp_state_a:1;
+		U64 gq_detect_cp_state_b:1;
+		U64 gq_detect_cp_state_c:1;
+		U64 gq_detect_cp_state_ef:1;
+		U64 gq_din_error_init_sockopt:1;
+		U64 err_cp_state_zero;
+		U64 err_pp_unplug;
+		U64 err_cp_state_a;
+		U64 err_cp_state_b;
+		U64 err_cp_state_c;
+    	U64 reserve:6;
+    }sItem;
+}Secc_Fault64_127_t;
+
+enum
+{
+    SItem_EV_TIMEOUT_CAN_DATA = 0,               //车端can数据超时
+    SItem_GQ_DIN_SHUTDOWN_BY_EVSE = 1,           //EVSE关机
+    SItem_GQ_DIN_FAILED_RESPONSE = 2,            //响应失败
+    SItem_GQ_DIN_SEQUENCE_ERROR = 3,             //顺序错误
+    SItem_GQ_DIN_SIGNATURE_ERROR = 4,            //签名验证失败
+    SItem_GQ_DIN_UNKNOWN_SESSION = 5,            //无法识别的会话
+    SItem_GQ_DIN_SUDDEN_STOP_BY_SECC = 6,        //SECC意外关闭
+    SItem_GQ_DIN_STOP_BY_SECC = 7,               //SECC主动关闭
+    SItem_GQ_DIN_NO_REQUEST_FROM_EV = 8,         //没有收到车端请求
+    SItem_GQ_DIN_EV_DO_NOT_STOP = 9,             //车端未停止
+    SItem_GQ_V2G_COMM_PORT_MAY_LOST = 10,        //v2g通讯丢失
+    SItem_GQ_CAN_LOSS_DETECT_ERROR = 11,         //can检测丢失
+    SItem_GQ_CAN_CRMAA_TIMEOUT_ERROR = 12,       //CRMAA超时
+    SItem_GQ_CAN_CRM00_TIMEOUT_ERROR = 13,       //CRM00超时
+    SItem_GQ_CAN_CTSCML_TIMEOUT_ERROR = 14,      //CTS/CML超时
+    SItem_GQ_CAN_CROAA_TIMEOUT_ERROR = 15,       //CROAA超时
+    SItem_GQ_CAN_CST_TIMEOUT_ERROR = 16,         //CST超时
+    SItem_GQ_CAN_CCS_TIMEOUT_ERROR = 17,         //CCS超时
+    SItem_GQ_CAN_CSD_TIMEOUT_ERROR = 18,         //CSD超时
+    SItem_GQ_DIN_EMERGENCY_STOP_BY_SECC = 19,    //SECC意外停止
+    SItem_GQ_DIN_STOP_BY_CHARGER = 20,           //充电器停止
+    SItem_GQ_CAN_BRM_TIMEOUT_ERROR = 21,         //BRM超时
+    SItem_GQ_CAN_BCP_TIMEOUT_ERROR = 22,         //BCP超时
+    SItem_GQ_CAN_BRO_TIMEOUT_ERROR = 23,         //BRO超时
+    SItem_GQ_CAN_BCS_TIMEOUT_ERROR = 24,         //BCS超时
+    SItem_GQ_CAN_BCL_TIMEOUT_ERROR = 25,         //BCL超时
+    SItem_GQ_CAN_BST_TIMEOUT_ERROR = 26,         //BST超时
+    SItem_GQ_CAN_BSD_TIMEOUT_ERROR = 27,         //BSD超时
+    SItem_EV_RESSTEMPERATUREINHIBIT = 28,        //EV充电失败RESS温度限制
+    SItem_EV_EVSHIFTPOSITION = 29,               //EV端连接器移位
+    SItem_EV_CHARGERCONNECTORLOCKFAULT = 30,     //充电器连接器锁定故障
+    SItem_EV_EVRESSMALFUNCTION = 31,             //EV故障
+    SItem_EV_CHARGINGCURRENTDIFFERENTIAL = 32,   //EV充电失败充电电流差
+    SItem_EV_CHARGINGVOLTAGEOUTOFRANGE = 33,     //EV充电失败电压超出范围
+    SItem_EV_CHARGINGSYSTEMINCOMPATIBILITY = 34, //充电系统不兼容
+    SItem_EV_NODATA = 35,                        //没有数据
+    SItem_EMERGENCY_CHARGER_OPEN_CONTACTOR = 36, //充电接触器断开
+    GQ_SIG_ERROR_CP_PP = 37,                     //CP/PP错误
+    GQ_V2G_ERROR_UNKNOWN_STATE = 38,             //V2G未知状态
+    GQ_SLAC_ERROR_INIT = 39,                     //SLAC初始化错误
+    GQ_CHM_TIMEOUT = 40,                         //CHM超时
+    GQ_DIN_RECEIVED_CST = 41,                    //接收到CST
+    GQ_DIN_STOP_BY_EV = 42,                      //EV端停止
+    GQ_DIN_RECEIVED_CEM = 43,                    //接受到CEM
+    GQ_CP_STATE_B_2SECONDS = 44,                 //
+    GQ_CP_STATE_C_2SECONDS = 45,                 //
+    GQ_DETECT_CP_ZERO = 46,                      //检测到CP为0
+    GQ_DETECT_PP_UNPLUG = 47,                    //检测到PP未连接
+    GQ_DETECT_CP_STATE_A = 48,                   //检测到CP状态A
+    GQ_DETECT_CP_STATE_B = 49,                   //检测到CP状态B
+    GQ_DETECT_CP_STATE_C = 50,                   //检测到CP状态C
+    GQ_DETECT_CP_STATE_EF = 51,                  //检测到CP处于错误状态EF
+    GQ_DIN_ERROR_INIT_SOCKOPT = 52,              //socket初始化错误
+    ERR_CP_STATE_ZERO = 53,                      //CP状态为0错误
+    ERR_PP_UNPLUG = 54,                          //PP未连接
+    ERR_CP_STATE_A = 55,                         //CP错误状态A
+    ERR_CP_STATE_B = 56,                         //CP错误状态B
+    ERR_CP_STATE_C = 57                          //CP错误状态C
+};
+
+//SECC故障：17-20字节
+typedef union
+{
+	U32 uiWhole_flag;
+    struct
+    {
+		U32 initialization_process                  :1;
+		U32 sequence_run_v2g                        :1;
+		U32 sequence_slac                           :1;
+		U32 sequence_sdp_req                        :1;
+		U32 sequence_sdp_res                        :1;
+		U32 sequence_app_handshake_req              :1;
+		U32 sequence_app_handshake_res              :1;
+		U32 sequence_session_setup_req              :1;
+		U32 sequence_session_setup_res              :1;
+		U32 sequence_service_discovery_req          :1;
+		U32 sequence_service_discovery_res          :1;
+		U32 sequence_service_payment_selection_req  :1;
+		U32 sequence_service_payment_selection_res  :1;
+		U32 sequence_contract_authentication_req    :1;
+		U32 sequence_contract_authentication_res    :1;
+		U32 sequence_charge_parameter_discovery_req :1;
+		U32 sequence_charge_parameter_discovery_res :1;
+		U32 sequence_cable_check_req                :1;
+		U32 sequence_cable_check_res                :1;
+		U32 sequence_pre_charge_req                 :1;
+		U32 sequence_pre_charge_res                 :1;
+		U32 sequence_power_delivery_req             :1;
+		U32 sequence_power_delivery_res             :1;
+		U32 sequence_current_demand_req             :1;
+		U32 sequence_current_demand_res             :1;
+		U32 sequence_power_delivery2_req            :1;
+		U32 sequence_power_delivery2_res            :1;
+		U32 sequence_welding_detection_req          :1;
+		U32 sequence_welding_detection_res          :1;
+		U32 sequence_session_stop_req               :1;
+		U32 sequence_session_stop_res               :1;
+		U32 sequence_restart_process                :1;
+    }sItem;
+}Secc_Fault128_159_t;
+//BEM.32-39 Message_Sequence
+enum
+{
+    INITIALIZATION_PROCESS                  = 0x01,//初始化进程
+    SEQUENCE_RUN_V2G                        = 0x02,//运行V2G请求
+    SEQUENCE_SLAC                           = 0x03,//SLAC连接状态
+    SEQUENCE_SDP_REQ                        = 0x04,//SDP请求
+    SEQUENCE_SDP_RES                        = 0x05,//SDP响应
+    SEQUENCE_APP_HANDSHAKE_REQ              = 0x06,//APP握手请求
+    SEQUENCE_APP_HANDSHAKE_RES              = 0x07,//APP握手响应
+    SEQUENCE_SESSION_SETUP_REQ              = 0x08,//会话建立请求
+    SEQUENCE_SESSION_SETUP_RES              = 0x09,//会话建立响应
+    SEQUENCE_SERVICE_DISCOVERY_REQ          = 0x0A,//服务获取发现请求
+    SEQUENCE_SERVICE_DISCOVERY_RES          = 0x0B,//服务获取发现响应
+    SEQUENCE_SERVICE_PAYMENT_SELECTION_REQ  = 0x0C,//付款选择请求
+    SEQUENCE_SERVICE_PAYMENT_SELECTION_RES  = 0x0D,//付款选择响应
+    SEQUENCE_CONTRACT_AUTHENTICATION_REQ    = 0x0E,//合同认证请求
+    SEQUENCE_CONTRACT_AUTHENTICATION_RES    = 0x0F,//合同认证响应
+    SEQUENCE_CHARGE_PARAMETER_DISCOVERY_REQ = 0x10,//充电参数发现请求
+    SEQUENCE_CHARGE_PARAMETER_DISCOVERY_RES = 0x11,//充电参数发现响应
+    SEQUENCE_CABLE_CHECK_REQ                = 0x12,//绝缘检测请求
+    SEQUENCE_CABLE_CHECK_RES                = 0x13,//绝缘检测响应
+    SEQUENCE_PRE_CHARGE_REQ                 = 0x14,//预充请求
+    SEQUENCE_PRE_CHARGE_RES                 = 0x15,//预充响应
+    SEQUENCE_POWER_DELIVERY_REQ             = 0x16,//功率输出请求
+    SEQUENCE_POWER_DELIVERY_RES             = 0x17,//功率输出响应
+    SEQUENCE_CURRENT_DEMAND_REQ             = 0x18,//电流需求请求
+    SEQUENCE_CURRENT_DEMAND_RES             = 0x19,//电流需求响应
+    SEQUENCE_POWER_DELIVERY2_REQ            = 0x1A,//功率2输出请求
+    SEQUENCE_POWER_DELIVERY2_RES            = 0x1B,//功率2输出响应
+    SEQUENCE_WELDING_DETECTION_REQ          = 0x1C,//焊接检测请求
+    SEQUENCE_WELDING_DETECTION_RES          = 0x1D,//焊接检测响应
+    SEQUENCE_SESSION_STOP_REQ               = 0x1E,//会话结束请求
+    SEQUENCE_SESSION_STOP_RES				= 0x1F,//会话结束响应
+    SEQUENCE_RESTART_PORCESS                = 0x30,//复位进程
+};
+
+//SECC故障：21-27字节
+typedef union
+{
+	U64 u64Whole_flag;
+    struct
+    {
+		U64 CHADEMO_LockErr								:1;
+		U64 CHADEMO_Start_NoPlugIn_TimeOut 				:1;
+		U64 CHADEMO_WaitComm_TimeOut					:1;
+		U64 CHADEMO_VehicleShiftPosition_Error			:1;
+		U64 CHADEMO_Comm_VehicleParaUpdated_TimeOut		:1;
+		U64 CHADEMO_Comm_ReqVolOverMaxVol				:1;
+		U64 CHADEMO_Comm_ReqVolLessAvailableVol	 		:1;
+		U64 CHADEMO_EV_AllowCharge_TimeOut				:1;
+		U64 CHADEMO_WaitEvseSelfCheckOK_TimeOut	 		:1;
+		U64 CHADEMO_CP3_ChargePermission_BeforeError	:1;
+		U64 CHADEMO_102_5_ChargingBit_BeforeError		:1;
+		U64 CHADEMO_PreChargeWaitEvContactors_TimeOut	:1;
+		U64 CHADEMO_PreChargeWaitEvReqCurrent_TimeOut	:1;
+		U64 CHADEMO_VEHICLE_OVERVOLT_Error				:1;
+		U64 CHADEMO_VEHICLE_UNDERVOLT_Error				:1;
+		U64 CHADEMO_VEHICLE_CURRDIFF_Error				:1;
+		U64 CHADEMO_VEHICLE_TEMPERATURE_Error			:1;
+		U64 CHADEMO_VEHICLE_VOLTDIFF_Error				:1;
+		U64 CHADEMO_VehicleGENERAL_ERROR_Error			:1;
+		U64 CHADEMO_Charing_ChargePermission_Disable	:1;
+		U64 CHADEMO_EvseTimeOut_Error					:1;
+		U64 CHADEMO_EvTimeOut_100_101_102_Error 		:1;
+		U64 CCS2_FastProtect_CPliotDetected				:1;
+		U64 CCS2_Slac_Error								:1;
+		U64 CCS2_Session_Error							:1;
+		U64 CCS2_EvseTimeOut_Error						:1;
+		U64 CCS2_SlacDetected_Check_TimeOut				:1;
+		U64 CCS2_Start_NoPlugIn_TimeOut					:1;
+		U64 CCS2_Wait_NetWorkInitOK_TimeOut				:1;
+		U64 CCS2_Wait_SDP_TimeOut						:1;
+		U64 CCS2_Wait_SAP_TimeOut						:1;
+		U64 CCS2_SLAC_Static_SET_KEY_TimeOut			:1;
+		U64 CCS2_SLAC_Wait_CM_SLAC_PARM_REQ_TimeOut		:1;
+		U64 CCS2_SLAC_Wait_ATTEN_CHAR_IND_TimeOut		:1;
+		U64 CCS2_SLAC_Wait_ATTEN_CHAR_RSP_TimeOut		:1;
+		U64 CCS2_SLAC_Wait_MATCH_OR_VALIDATE_TimeOut	:1;
+		U64 CCS2_SLAC_Wait_LinkDetected_TimeOut			:1;
+		U64 CCS2_SLAC_SlacTimeout						:1;
+		U64 CCS2_SLAC_RSP_RETRY_LIMIT					:1;
+		U64 CCS2_SLAC_Match_ErrLIMIT					:1;
+		U64 CCS2_SLAC_CM_START_ATTEN_CHAR_TIMEOUT		:1;
+		U64 CCS2_ServiceCategoryFlag_Error				:1;
+		U64 CCS2_SelectedPaymentOption_Error			:1;
+		U64 CCS2_GenChallenge_Error						:1;
+		U64 CCS2_AC_EVChargeParameter_Error				:1;
+		U64 CCS2_PhysicalValue_Multiplier_Error			:1;
+		U64 CCS2_PhysicalValue_Unit_Error				:1;
+		U64 CCS2_RequestedEnergyTransferType_Error		:1;
+		U64 CCS2_EVMaxVolLessThanSeccMinVol_Error		:1;
+		U64 CCS2_EVMaxCurLessThanSeccMinCur_Error		:1;
+		U64 CCS2_EVReqVolLessThanSeccMinVol_Error		:1;
+		U64 CCS2_EVReqVolMoreThanSeccMaxVol_Error		:1;
+		U64 CCS2_EVReqVolMoreThanEVMaxVol_Error			:1;
+		U64 CCS2_EVReqCurMoreThanEVMaxCur_Error			:1;
+		U64 CCS2_SessionUNKNOW_Error					:1;
+		U64 CCS2_CP_Error								:1;
+		U64 CCS2_NO_DC_EVPowerDeliveryParameter_Error	:1;
+		U64 CCS2_CHARGING_PROFILE_INVALID_Error			:1;
+		U64 CCS2_EVCloseSocket_Error					:1;
+		U64 CCS2_Sequence_Timeout_SetupTimer_Error		:1;
+		U64 CCS2_Sequence_Timeout_AppSession_Error		:1;
+		U64 CCS2_CPState_Detection_Timeout_Error		:1;
+		U64 CCS2_EV_BatteryTemperature_Error			:1;
+		U64 CCS2_EV_ShiftPosition_Error					:1;
+    }sItem;
+}Secc_Fault160_223_t;
+
+enum {
+    CHADEMO_LockErr_bit                            = 0,
+    CHADEMO_Start_NoPlugIn_TimeOut_bit             = 1,
+    CHADEMO_WaitComm_TimeOut_bit                   = 2,
+    CHADEMO_VehicleShiftPosition_Error_bit         = 3,
+    CHADEMO_Comm_VehicleParaUpdated_TimeOut_bit    = 4,
+    CHADEMO_Comm_ReqVolOverMaxVol_bit              = 5,
+    CHADEMO_Comm_ReqVolLessAvailableVol_bit        = 6,
+    CHADEMO_EV_AllowCharge_TimeOut_bit             = 7,
+    CHADEMO_WaitEvseSelfCheckOK_TimeOut_bit        = 8,
+    CHADEMO_CP3_ChargePermission_BeforeError_bit   = 9,
+    CHADEMO_102_5_ChargingBit_BeforeError_bit      = 10,
+    CHADEMO_PreChargeWaitEvContactors_TimeOut_bit  = 11,
+    CHADEMO_PreChargeWaitEvReqCurrent_TimeOut_bit  = 12,
+    CHADEMO_VEHICLE_OVERVOLT_Error_bit             = 13,
+    CHADEMO_VEHICLE_UNDERVOLT_Error_bit            = 14,
+    CHADEMO_VEHICLE_CURRDIFF_Error_bit             = 15,
+    CHADEMO_VEHICLE_TEMPERATURE_Error_bit          = 16,
+    CHADEMO_VEHICLE_VOLTDIFF_Error_bit             = 17,
+    CHADEMO_VehicleGENERAL_ERROR_Error_bit         = 18,
+    CHADEMO_Charing_ChargePermission_Disable_bit   = 19,
+    CHADEMO_EvseTimeOut_Error_bit                  = 20,
+    CHADEMO_EvTimeOut_100_101_102_Error_bit        = 21,
+    CCS2_FastProtect_CPliotDetected_bit            = 22,
+    CCS2_Slac_Error_bit                            = 23,
+    CCS2_Session_Error_bit                         = 24,
+    CCS2_EvseTimeOut_Error_bit                     = 25,
+    CCS2_SlacDetected_Check_TimeOut_bit            = 26,
+    CCS2_Start_NoPlugIn_TimeOut_bit                = 27,
+    CCS2_Wait_NetWorkInitOK_TimeOut_bit            = 28,
+    CCS2_Wait_SDP_TimeOut_bit                      = 29,
+    CCS2_Wait_SAP_TimeOut_bit                      = 30,
+    CCS2_SLAC_Static_SET_KEY_TimeOut_bit           = 31,
+    CCS2_SLAC_Wait_CM_SLAC_PARM_REQ_TimeOut_bit    = 32,
+    CCS2_SLAC_Wait_ATTEN_CHAR_IND_TimeOut_bit      = 33,
+    CCS2_SLAC_Wait_ATTEN_CHAR_RSP_TimeOut_bit      = 34,
+    CCS2_SLAC_Wait_MATCH_OR_VALIDATE_TimeOut_bit   = 35,
+    CCS2_SLAC_Wait_LinkDetected_TimeOut_bit        = 36,
+    CCS2_SLAC_SlacTimeout_bit                      = 37,
+    CCS2_SLAC_RSP_RETRY_LIMIT_bit                  = 38,
+    CCS2_SLAC_Match_ErrLIMIT_bit                   = 39,
+    CCS2_SLAC_CM_START_ATTEN_CHAR_TIMEOUT_bit      = 40,
+    CCS2_ServiceCategoryFlag_Error_bit             = 41,
+    CCS2_SelectedPaymentOption_Error_bit           = 42,
+    CCS2_GenChallenge_Error_bit                    = 43,
+    CCS2_AC_EVChargeParameter_Error_bit            = 44,
+    CCS2_PhysicalValue_Multiplier_Error_bit        = 45,
+    CCS2_ChargeParameter_Invalid_bit               = 46,
+    CCS2_CableCheck_Failed_bit                     = 47,
+    CCS2_PreCharge_Failed_bit                      = 48,
+    CCS2_PowerDelivery_Rejected_bit                = 49,
+    CCS2_CurrentDemand_Timeout_bit                 = 50,
+    CCS2_Contactor_Welded_bit                      = 51,
+    CCS2_Isolation_Failure_bit                     = 52,
+    CCS2_Voltage_OutOfRange_bit                    = 53,
+    CCS2_Current_OutOfRange_bit                    = 54,
+    CCS2_Temperature_Overlimit_bit                 = 55,
+    CCS2_Communication_Error_bit                   = 56,
+    CCS2_Authentication_Failed_bit                 = 57,
+    CCS2_Payment_Authorization_Failed_bit          = 58,
+    CCS2_System_Malfunction_bit                    = 59,
+    CCS2_Emergency_Stop_Activated_bit              = 60,
+    CCS2_User_Terminated_bit                       = 61,
+    CCS2_Unknown_Error_bit                         = 62
+};
+
+enum
+{
+    CHADEMO_LockErr_Bit                          =   0,
+    CHADEMO_Start_NoPlugIn_TimeOut_Bit           =   1,
+    CHADEMO_WaitComm_TimeOut_Bit                 =   2,
+    CHADEMO_VehicleShiftPosition_Error_Bit       =   3,
+    CHADEMO_Comm_VehicleParaUpdated_TimeOut_Bit  =   4,
+    CHADEMO_Comm_ReqVolOverMaxVol_Bit            =   5,
+    CHADEMO_Comm_ReqVolLessAvailableVol_Bit      =   6,
+    CHADEMO_EV_AllowCharge_TimeOut_Bit           =   7,
+    CHADEMO_WaitEvseSelfCheckOK_TimeOut_Bit      =   8,
+    CHADEMO_CP3_ChargePermission_BeforeError_Bit =   9,
+    CHADEMO_102_5_ChargingBit_BeforeError_Bit    =  10,
+    CHADEMO_PreChargeWaitEvContactors_TimeOut_Bit=  11,
+    CHADEMO_PreChargeWaitEvReqCurrent_TimeOut_Bit=  12,
+    CHADEMO_VEHICLE_OVERVOLT_Error_Bit           =  13,
+    CHADEMO_VEHICLE_UNDERVOLT_Error_Bit          =  14,
+    CHADEMO_VEHICLE_CURRDIFF_Error_Bit           =  15,
+    CHADEMO_VEHICLE_TEMPERATURE_Error_Bit        =  16,
+    CHADEMO_VEHICLE_VOLTDIFF_Error_Bit           =  17,
+    CHADEMO_VehicleGENERAL_ERROR_Error_Bit       =  18,
+    CHADEMO_Charing_ChargePermission_Disable_Bit =  19,
+    CHADEMO_EvseTimeOut_Error_Bit                =  20,
+    CHADEMO_EvTimeOut_100_101_102_Error_Bit      =  21,
+    CCS2_FastProtect_CPliotDetected_Bit          =  22,
+    CCS2_Slac_Error_Bit                          =  23,
+    CCS2_Session_Error_Bit                       =  24,
+    CCS2_EvseTimeOut_Error_Bit                   =  25,
+    CCS2_SlacDetected_Check_TimeOut_Bit          =  26,
+    CCS2_Start_NoPlugIn_TimeOut_Bit              =  27,
+    CCS2_Wait_NetWorkInitOK_TimeOut_Bit          =  28,
+    CCS2_Wait_SDP_TimeOut_Bit                    =  29,
+    CCS2_Wait_SAP_TimeOut_Bit                    =  30,
+    CCS2_SLAC_Static_SET_KEY_TimeOut_Bit         =  31,
+    CCS2_SLAC_Wait_CM_SLAC_PARM_REQ_TimeOut_Bit  =  32,
+    CCS2_SLAC_Wait_ATTEN_CHAR_IND_TimeOut_Bit    =  33,
+    CCS2_SLAC_Wait_ATTEN_CHAR_RSP_TimeOut_Bit    =  34,
+    CCS2_SLAC_Wait_MATCH_OR_VALIDATE_TimeOut_Bit =  35,
+    CCS2_SLAC_Wait_LinkDetected_TimeOut_Bit      =  36,
+    CCS2_SLAC_SlacTimeout_Bit                    =  37,
+    CCS2_SLAC_RSP_RETRY_LIMIT_Bit                =  38,
+    CCS2_SLAC_Match_ErrLIMIT_Bit                 =  39,
+    CCS2_SLAC_CM_START_ATTEN_CHAR_TIMEOUT_Bit    =  40,
+    CCS2_ServiceCategoryFlag_Error_Bit           =  41,
+    CCS2_SelectedPaymentOption_Error_Bit         =  42,
+    CCS2_GenChallenge_Error_Bit                  =  43,
+    CCS2_AC_EVChargeParameter_Error_Bit          =  44,
+    CCS2_PhysicalValue_Multiplier_Error_Bit      =  45,
+    CCS2_PhysicalValue_Unit_Error_Bit            =  46,
+    CCS2_RequestedEnergyTransferType_Error_Bit   =  47,
+    CCS2_EVMaxVolLessThanSeccMinVol_Error_Bit    =  48,
+    CCS2_EVMaxCurLessThanSeccMinCur_Error_Bit    =  49,
+    CCS2_EVReqVolLessThanSeccMinVol_Error_Bit    =  50,
+    CCS2_EVReqVolMoreThanSeccMaxVol_Error_Bit    =  51,
+    CCS2_EVReqVolMoreThanEVMaxVol_Error_Bit      =  52,
+    CCS2_EVReqCurMoreThanEVMaxCur_Error_Bit      =  53,
+    CCS2_SessionUNKNOW_Error_Bit                 =  54,
+    CCS2_CP_Error_Bit                            =  55,
+    CCS2_NO_DC_EVPowerDeliveryParameter_Error_Bit=  56,
+    CCS2_CHARGING_PROFILE_INVALID_Error_Bit      =  57,
+    CCS2_EVCloseSocket_Error_Bit                 =  58,
+    CCS2_Sequence_Timeout_SetupTimer_Error_Bit   =  59,
+    CCS2_Sequence_Timeout_AppSession_Error_Bit   =  60,
+    CCS2_CPState_Detection_Timeout_Error_Bit     =  61,
+    CCS2_EV_BatteryTemperature_Error_Bit         =  62,
+    CCS2_EV_ShiftPosition_Error_Bit              =  63
+};
+
+enum
+{
+	CHADEMO_LockErr								= 200,
+	CHADEMO_Start_NoPlugIn_TimeOut 				= 1000,
+	CHADEMO_WaitComm_TimeOut					= 1001,
+	CHADEMO_VehicleShiftPosition_Error			= 1002,
+	CHADEMO_Comm_VehicleParaUpdated_TimeOut		= 1003,
+	CHADEMO_Comm_ReqVolOverMaxVol				= 1004,
+	CHADEMO_Comm_ReqVolLessAvailableVol	 		= 1005,
+	CHADEMO_EV_AllowCharge_TimeOut				= 1006,
+	CHADEMO_WaitEvseSelfCheckOK_TimeOut	 		= 1007,
+	CHADEMO_CP3_ChargePermission_BeforeError	= 1008,
+	CHADEMO_102_5_ChargingBit_BeforeError		= 1009,
+	CHADEMO_PreChargeWaitEvContactors_TimeOut	= 1010,
+	CHADEMO_PreChargeWaitEvReqCurrent_TimeOut	= 1011,
+	CHADEMO_VEHICLE_OVERVOLT_Error				= 1012,
+	CHADEMO_VEHICLE_UNDERVOLT_Error				= 1013,
+	CHADEMO_VEHICLE_CURRDIFF_Error				= 1014,
+	CHADEMO_VEHICLE_TEMPERATURE_Error			= 1015,
+	CHADEMO_VEHICLE_VOLTDIFF_Error				= 1016,
+	CHADEMO_VehicleGENERAL_ERROR_Error			= 1017,
+	CHADEMO_Charing_ChargePermission_Disable	= 1018,
+	CHADEMO_EvseTimeOut_Error					= 1019,
+	CHADEMO_EvTimeOut_100_101_102_Error 		= 2000,
+	CCS2_FastProtect_CPliotDetected				= 6001,
+	CCS2_Slac_Error								= 6002,
+	CCS2_Session_Error							= 6003,
+	CCS2_EvseTimeOut_Error						= 6004,
+	CCS2_SlacDetected_Check_TimeOut				= 6006,
+	CCS2_Start_NoPlugIn_TimeOut					= 6007,
+	CCS2_Wait_NetWorkInitOK_TimeOut				= 6008,
+	CCS2_Wait_SDP_TimeOut						= 6009,
+	CCS2_Wait_SAP_TimeOut						= 6010,
+	CCS2_SLAC_Static_SET_KEY_TimeOut			= 7002,
+	CCS2_SLAC_Wait_CM_SLAC_PARM_REQ_TimeOut		= 7003,
+	CCS2_SLAC_Wait_ATTEN_CHAR_IND_TimeOut		= 7004,
+	CCS2_SLAC_Wait_ATTEN_CHAR_RSP_TimeOut		= 7005,
+	CCS2_SLAC_Wait_MATCH_OR_VALIDATE_TimeOut	= 7006,
+	CCS2_SLAC_Wait_LinkDetected_TimeOut			= 7007,
+	CCS2_SLAC_SlacTimeout						= 7008,
+	CCS2_SLAC_RSP_RETRY_LIMIT					= 7009,
+	CCS2_SLAC_Match_ErrLIMIT					= 7010,
+	CCS2_SLAC_CM_START_ATTEN_CHAR_TIMEOUT		= 7011,
+	CCS2_ServiceCategoryFlag_Error				= 8001,
+	CCS2_SelectedPaymentOption_Error			= 8002,
+	CCS2_GenChallenge_Error						= 8003,
+	CCS2_AC_EVChargeParameter_Error				= 8004,
+	CCS2_PhysicalValue_Multiplier_Error			= 8005,
+	CCS2_PhysicalValue_Unit_Error				= 8006,
+	CCS2_RequestedEnergyTransferType_Error		= 8007,
+	CCS2_EVMaxVolLessThanSeccMinVol_Error		= 8008,
+	CCS2_EVMaxCurLessThanSeccMinCur_Error		= 8009,
+	CCS2_EVReqVolLessThanSeccMinVol_Error		= 8010,
+	CCS2_EVReqVolMoreThanSeccMaxVol_Error		= 8011,
+	CCS2_EVReqVolMoreThanEVMaxVol_Error			= 8012,
+	CCS2_EVReqCurMoreThanEVMaxCur_Error			= 8013,
+	CCS2_SessionUNKNOW_Error					= 8014,
+	CCS2_CP_Error								= 8015,
+	CCS2_NO_DC_EVPowerDeliveryParameter_Error	= 8016,
+	CCS2_CHARGING_PROFILE_INVALID_Error			= 8017,
+	CCS2_EVCloseSocket_Error					= 8018,
+	CCS2_Sequence_Timeout_SetupTimer_Error		= 8019,
+	CCS2_Sequence_Timeout_AppSession_Error		= 8020,
+	CCS2_CPState_Detection_Timeout_Error		= 8021,
+	CCS2_EV_BatteryTemperature_Error			= 8022,
+	CCS2_EV_ShiftPosition_Error					= 8023,
+};
+
+typedef union
+{
+	U16 unWhole_flag;
+    struct
+    {
+		U16 CCS2_EV_ConnectorLock_Error				:1;
+		U16 CCS2_EV_BatteryMalfunction_Error		:1;
+		U16 CCS2_EV_CurrentDifferential_Error		:1;
+		U16 CCS2_EV_VoltageOutOfRange_Error			:1;
+		U16 CCS2_EV_SystemIncompatable_Error		:1;
+		U16 CCS2_EV_UNKNOWN_Error					:1;
+		U16 CCS2_SERVICE_IDINVALID_Error			:1;
+		U16 ComTimeOut_startcharge					:1;
+		U16 ComTimeOut_parametersync				:1;
+		U16 ComTimeOut_selftestcomplete				:1;
+		U16 ComTimeOut_chargingparameter			:1;
+		U16 ComTimeOut_stopcharging					:1;
+		U16 Gq_Can_Bsm_Timeout_Error				:1;
+		U16 reserve									:3;
+    }sItem;
+}Secc_Fault224_239_t;
+
+enum
+{
+    CCS2_EV_ConnectorLock_Error_Bit          =    0,
+    CCS2_EV_BatteryMalfunction_Error_Bit     =    1,
+    CCS2_EV_CurrentDifferential_Error_Bit    =    2,
+    CCS2_EV_VoltageOutOfRange_Error_Bit      =    3,
+    CCS2_EV_SystemIncompatable_Error_Bit     =    4,
+    CCS2_EV_UNKNOWN_Error_Bit                =    5,
+    CCS2_SERVICE_IDINVALID_Error_Bit         =    6,
+    ComTimeOut_startcharge_Bit               =    7,
+    ComTimeOut_parametersync_Bit             =    8,
+    ComTimeOut_selftestcomplete_Bit          =    9,
+    ComTimeOut_chargingparameter_Bit         =    10,
+    ComTimeOut_stopcharging_Bit              =    11,
+    GQ_CAN_BSM_TIMEOUT_ERROR_Bit             =    12
+};
+
+enum
+{
+	CCS2_EV_ConnectorLock_Error				= 8024,
+	CCS2_EV_BatteryMalfunction_Error		= 8025,
+	CCS2_EV_CurrentDifferential_Error		= 8026,
+	CCS2_EV_VoltageOutOfRange_Error			= 8027,
+	CCS2_EV_SystemIncompatable_Error		= 8028,
+	CCS2_EV_UNKNOWN_Error					= 8029,
+	CCS2_SERVICE_IDINVALID_Error			= 8030,
+	ComTimeOut_startcharge					= 9000,
+	ComTimeOut_parametersync				= 9001,
+	ComTimeOut_selftestcomplete				= 9002,
+	ComTimeOut_chargingparameter			= 9003,
+	ComTimeOut_stopcharging					= 9004,
+	GQ_CAN_BSM_TIMEOUT_ERROR				= 9005
+};
+
+typedef union
+{
+	U8 ucWhole_flag;
+    struct
+    {
+		U8 ucImd_bus_bar_reverse:1;	//母线反接
+		U8 ucImd_self_test:1;		//自检失败
+		//U8 ucImd_gnd_detection:1;	//接地检测断开
+		U8 reserve:6;
+	}sItem;
+}GY_Fault_t;
+
+enum
+{
+	IMD_BUS_BAR_REVERSE = 0,
+	IMD_SELF_TEST		= 1,
+	IMD_GND_DETECTION 	= 2
+};
+
+typedef struct
+{
+	Secc_Fault0_63_t sSecc_fault_first;
+	Secc_Fault64_127_t sSecc_fault_second;
+	Secc_Fault128_159_t sSecc_fault_third;
+	Secc_Fault160_223_t sSecc_fault_fourth;
+	Secc_Fault224_239_t sSecc_fault_fifth;
+}Secc_Fault_t;
+
+#pragma pack()
+
+extern GY_Fault_t g_sGY_fault[2];
+extern Secc_Fault_t g_sSecc_fault[2];
+extern Gun_Fault_t g_sGun_fault[2];
+extern Gun_Warn_t g_sGun_warn[2];
+extern U8 *g_pImd_fault[2];
+extern U8 *g_pMeter_fault[2];
+extern BOOL g_bAuth_test;
+
+Alarm_Status_e FaultCodeCheck(const Gun_Id_e eGun_id);
+BOOL PileFaultCodeCheck(const Gun_Id_e eGun_id);
+BOOL RecoverableWarnCodeCheck(const Gun_Id_e eGun_id);
+BOOL RecoverableFaultCodeCheck(const Gun_Id_e eGun_id);
+void PileAlarmReset(const U32 uiSignal_id);
+void PileAlarmSet(const U32 uiSignal_id);
+void GunReturnResetAlarm(const Gun_Id_e eGun_id);
+void Emergency_Fault_Init_Task(void * pvParameters);
+void GunAlarmReset(void *ptr, const StructType type, const U32 uiFault_code);
+void GunAlarmSet(void *ptr, const StructType type, const U32 uiFault_code);
+void PileAlarmResetTest(const U32 uiSignal_id);
+void GunAlarmResetTest(void *ptr, const StructType type, const U32 uiFault_code);
+#endif /* APP_FAULT_EMERGENCY_FAULT_IF_H_ */

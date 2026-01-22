@@ -1,0 +1,6 @@
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\drivers/fsl_gpio.h:176:24:GPIO_PinRead	16	static
+../user_code/APP/datasample/datasample.c:34:13:TemperatureSample	48	static
+../user_code/APP/datasample/datasample.c:151:13:CcuShutDown	32	static
+../user_code/APP/datasample/datasample.c:223:13:PowerOffSample	8	static
+../user_code/APP/datasample/datasample.c:245:13:DataSample_task	16	static
+../user_code/APP/datasample/datasample.c:263:6:DataSample_Init_task	24	static

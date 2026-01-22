@@ -1,0 +1,9 @@
+../user_code/HAL/flash_data/flash_data.c:26:6:SaveSignal2FlashFunc	16	static
+../user_code/HAL/flash_data/flash_data.c:32:13:FLEXSPI_NorFlash_GetConfig	16	static
+../user_code/HAL/flash_data/flash_data.c:87:17:FLEXSPI_NorFlash_GetVendorID	72	static
+../user_code/HAL/flash_data/flash_data.c:114:6:Hal_Norflash_Init	16	static
+../user_code/HAL/flash_data/flash_data.c:152:6:flexspi_flash_buffer_write	32	static
+../user_code/HAL/flash_data/flash_data.c:182:6:flexspi_flash_buffer_read	24	static
+../user_code/HAL/flash_data/flash_data.c:193:6:flexspi_flash_buffer_erase_backup_app_area	32	static
+../user_code/HAL/flash_data/flash_data.c:224:6:flexspi_flash_buffer_erase_sectors	24	static
+../user_code/HAL/flash_data/flash_data.c:252:6:flexspi_flash_buffer_write_a_page	24	static

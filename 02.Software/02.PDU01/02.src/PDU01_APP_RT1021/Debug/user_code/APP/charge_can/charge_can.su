@@ -1,0 +1,6 @@
+../user_code/APP/charge_can/charge_can.c:27:6:Charge_A_Can_Parse	16	static
+../user_code/APP/charge_can/charge_can.c:32:6:Charge_B_Can_Parse	16	static
+../user_code/APP/charge_can/charge_can.c:37:6:Charge_A_Can_Send_Task	40	static
+../user_code/APP/charge_can/charge_can.c:61:6:Charge_A_Can_Parse_Task	40	static
+../user_code/APP/charge_can/charge_can.c:91:6:Charge_B_Can_Parse_Task	40	static
+../user_code/APP/charge_can/charge_can.c:121:6:Charge_Can_Comm_Init_task	32	static

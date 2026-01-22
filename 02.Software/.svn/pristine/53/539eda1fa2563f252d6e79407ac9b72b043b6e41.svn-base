@@ -1,0 +1,10 @@
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:32:16:RTC_BinToBcd2	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:45:16:RTC_Bcd2ToBin	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:53:10:RTC_IIC_READ_ARRAY	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:77:10:RTC_IIC_WRITE_ARRAY	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:101:6:SetRealTime	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:124:6:GetRtcTime	8	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:150:6:PCF8563Init	24	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:165:6:Ext_Rtc_Task	40	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:177:6:Ext_Rtc_Init	8	static
+../user_code/HAL/hal_ext_rtc/hal_ext_rtc.c:182:6:Ext_Rtc_Init_Task	24	static

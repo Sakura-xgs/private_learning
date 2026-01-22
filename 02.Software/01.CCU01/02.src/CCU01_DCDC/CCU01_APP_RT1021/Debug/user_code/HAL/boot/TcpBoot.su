@@ -1,0 +1,6 @@
+../user_code/HAL/boot/TcpBoot.c:33:13:blDetcetTCPUpdataStep	24	static
+../user_code/HAL/boot/TcpBoot.c:90:6:blTcpCheckUpdateMsg	16	static
+../user_code/HAL/boot/TcpBoot.c:137:13:TCP_BOOT_ENTER_REPLY	48	static
+../user_code/HAL/boot/TcpBoot.c:182:13:TCP_BOOT_UPDATE_ACK	48	static
+../user_code/HAL/boot/TcpBoot.c:233:6:TcpUpdataFunc	280	static
+../user_code/HAL/boot/TcpBoot.c:371:6:TcpUpdataTimeOutFunc	8	static

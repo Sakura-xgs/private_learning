@@ -1,0 +1,12 @@
+../user_code/APP/secc/secc_can_parse.c:36:13:SendGunConnectAbort	40	static
+../user_code/APP/secc/secc_can_parse.c:58:13:SendGunRecBCPRequestPack	32	static
+../user_code/APP/secc/secc_can_parse.c:80:13:SendGunRecBCPEndPack	32	static
+../user_code/APP/secc/secc_can_parse.c:102:13:SendGunRecBCSRequestPack	32	static
+../user_code/APP/secc/secc_can_parse.c:124:13:SendGunRecBCSEndPack	32	static
+../user_code/APP/secc/secc_can_parse.c:146:6:BcpPrase	16	static
+../user_code/APP/secc/secc_can_parse.c:161:6:BcsPrase	24	static
+../user_code/APP/secc/secc_can_parse.c:185:6:EvErrorCodeParseFunc	16	static
+../user_code/APP/secc/secc_can_parse.c:256:6:PlcErrorCodeParseFunc	16	static
+../user_code/APP/secc/secc_can_parse.c:907:6:ParseCan1BmsPack	40	static
+../user_code/APP/secc/secc_can_parse.c:1249:13:RecvMultipackTimeoutCb	24	static
+../user_code/APP/secc/secc_can_parse.c:1281:6:RecvMultipackTimerTreat	32	static

@@ -1,0 +1,4 @@
+../user_code/APP/charge_control/GB_27930_parse_B.c:31:13:GB_RecvMultipackTimeoutCb	24	static
+../user_code/APP/charge_control/GB_27930_parse_B.c:72:13:GB_RecvMultipackTimerTreat_B	32	static
+../user_code/APP/charge_control/GB_27930_parse_B.c:193:13:GB_HandleEBMultipack_B	32	static
+../user_code/APP/charge_control/GB_27930_parse_B.c:279:6:GBCAN2Parse	32	static

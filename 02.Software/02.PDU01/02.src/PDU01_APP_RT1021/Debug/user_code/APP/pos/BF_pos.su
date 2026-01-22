@@ -1,0 +1,4 @@
+../user_code/APP/pos/BF_pos.c:20:13:BfPosRequest	4	static
+../user_code/APP/pos/BF_pos.c:25:13:BfPosParse	16	static
+../user_code/APP/pos/BF_pos.c:31:13:GetBfPosModel	4	static
+../user_code/APP/pos/BF_pos.c:36:6:BfPosInit	4	static

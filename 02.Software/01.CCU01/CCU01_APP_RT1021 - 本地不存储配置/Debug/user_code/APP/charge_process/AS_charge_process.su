@@ -1,0 +1,5 @@
+../user_code/APP/charge_process/AS_charge_process.c:29:13:StartChargeStatusProcess	24	static
+../user_code/APP/charge_process/AS_charge_process.c:90:13:AS_GUNAChargeProcess	16	static
+../user_code/APP/charge_process/AS_charge_process.c:135:13:AS_GUNBChargeProcess	32	static
+../user_code/APP/charge_process/AS_charge_process.c:185:23:AS_ChargeProcess	4	static
+../user_code/APP/charge_process/AS_charge_process.c:190:6:ASChargeProcessInit	4	static

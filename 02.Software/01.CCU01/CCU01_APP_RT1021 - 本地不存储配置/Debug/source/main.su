@@ -1,0 +1,14 @@
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_gpio.h:101:20:GPIO_WritePinOutput	24	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_gpio.h:176:24:GPIO_PinRead	16	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_lpi2c.h:699:20:LPI2C_MasterEnableDMA	16	static
+../source/main.c:95:5:main	16	static
+../source/main.c:141:13:UserUartBaudRateInit	8	static
+../source/main.c:153:13:Init_Task	24	static
+../source/main.c:205:13:Self_Check_Task	40	static
+../source/main.c:333:13:Led_Task	24	static
+../source/main.c:357:13:I2cErrRecover	16	static
+../source/main.c:391:14:my_malloc	24	static
+../source/main.c:402:13:my_free	16	static
+../source/main.c:408:13:cJSON_Init	16	static
+../source/main.c:423:6:vApplicationStackOverflowHook	32	static
+../source/main.c:442:13:vApplicationMallocFailedHook	4	static

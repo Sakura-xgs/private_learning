@@ -1,0 +1,11 @@
+../user_code/APP/rfid/HW_rfid.c:31:12:HexStrToInt	32	static
+../user_code/APP/rfid/HW_rfid.c:58:13:XorChecksum	32	static
+../user_code/APP/rfid/HW_rfid.c:76:13:SendFirstDataRequest	24	static
+../user_code/APP/rfid/HW_rfid.c:115:13:SendSecondDataRequest	24	static
+../user_code/APP/rfid/HW_rfid.c:149:13:HwRfidSearchRequest	16	static
+../user_code/APP/rfid/HW_rfid.c:170:13:HwRfidHeartRequest	16	static
+../user_code/APP/rfid/HW_rfid.c:185:13:RfidReadData	24	static
+../user_code/APP/rfid/HW_rfid.c:239:6:HwRfidParse	32	static
+../user_code/APP/rfid/HW_rfid.c:310:13:GetRfidConfig	16	static
+../user_code/APP/rfid/HW_rfid.c:356:14:GetHwRfidModel	8	static
+../user_code/APP/rfid/HW_rfid.c:363:6:HwRfidInit	4	static

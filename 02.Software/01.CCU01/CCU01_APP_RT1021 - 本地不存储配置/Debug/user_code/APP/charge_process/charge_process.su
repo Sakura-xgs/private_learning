@@ -1,0 +1,14 @@
+../user_code/APP/charge_process/charge_process.c:36:13:ChargeProcessSelect	8	static
+../user_code/APP/charge_process/charge_process.c:82:6:GunIdValidCheck	16	static
+../user_code/APP/charge_process/charge_process.c:98:6:CheckEVStop	16	static
+../user_code/APP/charge_process/charge_process.c:126:6:IdleStatusProcess	24	static
+../user_code/APP/charge_process/charge_process.c:166:13:PlugStartCharge	16	static
+../user_code/APP/charge_process/charge_process.c:184:6:PlugingStatusProcess	24	static
+../user_code/APP/charge_process/charge_process.c:225:6:ChargingStatusProcess	24	static
+../user_code/APP/charge_process/charge_process.c:253:6:FaultStatusProcess	24	static
+../user_code/APP/charge_process/charge_process.c:300:6:GunStatusChange	48	static
+../user_code/APP/charge_process/charge_process.c:462:6:AlarmStatusProcess	32	static
+../user_code/APP/charge_process/charge_process.c:541:13:ChargeProcessExec	16	static
+../user_code/APP/charge_process/charge_process.c:583:13:Charge_A_Process_Task	16	static
+../user_code/APP/charge_process/charge_process.c:608:13:Charge_B_Process_Task	16	static
+../user_code/APP/charge_process/charge_process.c:633:6:Charge_Process_Init_Task	24	static

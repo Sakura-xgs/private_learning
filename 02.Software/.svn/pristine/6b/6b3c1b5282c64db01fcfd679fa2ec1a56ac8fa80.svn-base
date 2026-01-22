@@ -1,0 +1,17 @@
+E:\0003.Charger_Software\02.PDU01\02.src\PDU01_APP_RT1021\drivers/fsl_gpio.h:136:20:GPIO_PortClear	16	static
+E:\0003.Charger_Software\02.PDU01\02.src\PDU01_APP_RT1021\drivers/fsl_gpio.h:176:24:GPIO_PinRead	16	static
+../user_code/HAL/factory_test/factory_test.c:33:6:ParseSNReadMsg	88	static
+../user_code/HAL/factory_test/factory_test.c:127:6:ParseSNWriteMsg	32	static
+../user_code/HAL/factory_test/factory_test.c:241:6:ClearPduSaveEepromData	16	static
+../user_code/HAL/factory_test/factory_test.c:268:6:PduMsgResponse	48	static
+../user_code/HAL/factory_test/factory_test.c:292:6:ParseRemoteCtrlMsg	24	static
+../user_code/HAL/factory_test/factory_test.c:313:6:FactoryTestParse	32	static
+../user_code/HAL/factory_test/factory_test.c:362:6:FactoryModeCtlFunc	40	static
+../user_code/HAL/factory_test/factory_test.c:403:6:RelayCtlTestFunc	40	static
+../user_code/HAL/factory_test/factory_test.c:428:6:LedTestFunc	40	static
+../user_code/HAL/factory_test/factory_test.c:453:6:SwVersionTestFunc	40	static
+../user_code/HAL/factory_test/factory_test.c:494:6:EepromTestFunc	40	static
+../user_code/HAL/factory_test/factory_test.c:517:6:WdgTestFunc	40	static
+../user_code/HAL/factory_test/factory_test.c:543:6:GpioDITestFunc	56	static
+../user_code/HAL/factory_test/factory_test.c:579:6:Factory_Test_Task	40	static
+../user_code/HAL/factory_test/factory_test.c:617:6:Factory_Test_Init_task	32	static

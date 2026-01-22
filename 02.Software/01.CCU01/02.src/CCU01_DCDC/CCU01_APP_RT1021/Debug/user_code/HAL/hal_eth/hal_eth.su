@@ -1,0 +1,11 @@
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\drivers/fsl_common_arm.h:225:20:_SDK_AtomicLocalClearAndSet4Byte	48	static
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\drivers/fsl_clock.h:1298:20:CLOCK_ControlGate	32	static
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\drivers/fsl_clock.h:1315:20:CLOCK_EnableClock	16	static
+../user_code/HAL/hal_eth/hal_eth.c:93:6:MDIO_Init	8	static
+../user_code/HAL/hal_eth/hal_eth.c:99:10:MDIO_Write	16	static
+../user_code/HAL/hal_eth/hal_eth.c:104:10:MDIO_Read	16	static
+../user_code/HAL/hal_eth/hal_eth.c:109:13:lwip_netif_status_callback	16	static
+../user_code/HAL/hal_eth/hal_eth.c:115:13:stack_init	80	static
+../user_code/HAL/hal_eth/hal_eth.c:183:13:LWIP_IP_Reinit	24	static
+../user_code/HAL/hal_eth/hal_eth.c:225:6:GetMacAddress	16	static
+../user_code/HAL/hal_eth/hal_eth.c:230:6:Lwip_Init	32	static

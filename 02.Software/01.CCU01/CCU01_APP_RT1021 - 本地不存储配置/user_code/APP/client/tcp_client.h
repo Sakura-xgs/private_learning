@@ -1,0 +1,327 @@
+/*
+ * tcp_client.h
+ *
+ *  Created on: 2024年9月30日
+ *      Author: qjwu
+ */
+
+#ifndef APP_CLIENT_TCP_CLIENT_H_
+#define APP_CLIENT_TCP_CLIENT_H_
+
+#include "tcp_client_IF.h"
+
+#define DEFAULT_CC1_12V_MAX			1280//0.01V
+#define DEFAULT_CC1_12V_MIN			1140//0.01V
+#define DEFAULT_CC1_6V_MAX			680//0.01V
+#define DEFAULT_CC1_6V_MIN			540//0.01V
+#define DEFAULT_CC1_4V_MAX			480//0.01V
+#define DEFAULT_CC1_4V_MIN			340//0.01V
+
+//枪温告警限制
+#define WARNNING_TEMP       		70
+//枪温故障限制
+#define FAULT_TEMP           		100
+//温差限制
+#define TEMP_DIFF            		15
+
+//mac地址长度
+#define UPLOAD_MACADDRESS_LEN       17U
+//枪最大默认输出功率
+#define GUN_DEFAULT_MAX_POWER       180 //KW
+//外设通讯状态
+#define DEVICE_COMM_CONNECT         0x01U
+#define DEVICE_COMM_DISCONNECT      0x00U
+//使用配置
+//#define ADMIN_CONFIG         		1
+//#define DEFAULT_CONFIG      		0
+//client发送数据缓存
+#define SEND_BUFF_SIZE 		 		512U
+//协议头
+#define HEAD_NUM_H   		 		0xAAU
+#define HEAD_NUM_L   		 		0x55U
+
+//自检状态
+#define SELF_TEST_SUCCESS    		0x01
+#define SELF_TEST_PROCESS 	 		0x00
+//数据域偏移量
+#define MSGBODY_OFFSET       		9U
+//预约控制
+#define START_BOOK           		0x01U
+#define CANCEL_BOOK          		0x02U
+
+//桩上传指令码
+#define C_LOGIN_IN_CMD					0x0001U//充电桩登录
+#define S_LOGIN_IN_ANS_CMD				0x8001
+#define C_GUN_STATUS_DATA_CMD 			0x0002U//状态包/心跳上传
+#define S_GUN_STATUS_DATA_ANS_CMD  		0x8002
+#define C_GUN_AUTH_CMD					0x0003U//桩鉴权报文
+#define S_GUN_AUTH_ANS_CMD				0x8003
+#define C_CHARGING_DATA_CMD				0x0004U//充电实时数据
+#define S_CHARGING_DATA_ANS_CMD			0x8004
+#define C_IMD_DATA_CMD					0x0005U//绝缘监测数据
+#define S_IMD_DATA_ANS_CMD				0x8005
+#define C_METER_DATA_CMD				0x0006U//电表数据
+#define S_METER_DATA_ANS_CMD			0x8006
+#define C_POS_DATA_CMD					0x0007U//pos机数据
+#define S_POS_DATA_ANS_CMD				0x8007
+#define C_RFID_DATA_CMD					0x0008U//刷卡板数据
+#define S_RFID_DATA_ANS_CMD				0x8008
+#define C_HMI_DATA_CMD					0x0009U//HMI数据
+#define S_HMI_DATA_ANS_CMD				0x8009
+#define C_SECC_DATA_CMD					0x0010U//SECC数据
+#define S_SECC_DATA_ANS_CMD				0x8010
+#define C_STOP_CHARGE_CMD				0x0011U//结束充电请求
+#define S_STOP_CHARGE_ANS_CMD			0x8011
+#define C_CHARGING_BILL_CMD				0x0012U//充电账单/结束充电
+#define S_CHARGING_BILL_ANS_CMD			0x8012
+#define C_EXTERNAL_DEVICE_DATA_CMD      0x0013U//外设汇总数据
+#define S_EXTERNAL_DEVICE_DATA_ANS_CMD  0x8013
+#define C_CCU_LOG_CMD					0x0014U//桩日志上传报文
+#define S_CCU_LOG_ANS_CMD				0x8014
+#define C_CIG_DATA_CMD					0x0016U//CIG小板日志上传报文
+#define S_CIG_DATA_ANS_CMD				0x8016
+
+
+//平台下发指令码
+#define S_SERVERSTART_CHARGE_CMD					0x0020//平台启动充电
+#define C_SERVERSTART_CHARGE_ANS_CMD				0x8020U
+#define S_SERVERSTOP_CHARGE_CMD						0x0021//平台结束充电
+#define C_SERVERSTOP_CHARGE_ANS_CMD   	            0x8021U
+#define S_BOOK_CHARGE_CMD          					0x0022//预约充电
+#define C_BOOK_CHARGE_ANS_CMD						0x8022U
+#define S_CANCELBOOK_CHARGE_CMD						0x0023//关闭预约充电
+#define C_CANCLEBOOK_CHARGE_ANS_CMD					0x8023U
+#define S_AMOUNT_CMD								0x0024//扣款指令
+#define C_AMOUNT_ANS_CMD							0x8024U
+#define S_GUN_CONTROL_CMD							0x0025//桩控制指令
+#define C_GUN_CONTROL_ANS_CMD						0x8025U
+#define S_SET_GUN_PARAM_CMD							0x0026//桩参数设置
+#define C_SET_GUN_PARAM_ANS_CMD						0x8026U
+#define S_SERVER_QUERY_STATUS_CMD					0x0027//主动查询桩状态
+#define C_SERVER_QUERY_STATUS_ANS_CMD				0x8027U
+#define S_SERVER_STATUS_CMD							0x0032//平台下发状态指令
+#define C_SERVER_STATUS_ANS_CMD						0x8032U
+#define S_SERVER_FAULT_INJECTION_CMD				0x0034//平台下发故障注入指令
+#define C_SERVER_FAULT_INJECTION_ANS_CMD			0x8034U
+#define S_SERVER_TEST_CONTROL_CMD					0x0035//平台下发调试控制
+#define C_SERVER_TEST_CONTROL_ANS_CMD				0x8035U
+#define S_PRODUCTION_CONTROL_CMD					0x0036//生产测试外设状态
+#define C_PRODUCTION_CONTROL_ANS_CMD				0x8036U
+#define S_CIG_UPDATE								0x0037//cig升级
+#define C_CIG_UPDATE_ANS							0x8037U
+
+//CCU上传报文数据长度
+//登录
+#define C_LOGIN_IN_LEN     						336U
+#define C_LOGIN_IN_PILE_RESERVE_LEN    			22U
+#define C_LOGIN_IN_GUN_RESERVE_LEN   			57U
+
+#define C_GUN_STATUS_DATA_LEN     				289U
+#define C_GUN_STATUS_DATA_PILE_RESERVE_LEN     	39U
+#define C_GUN_STATUS_DATA_GUN_RESERVE_LEN     	18U
+
+#define C_GUN_AUTH_LEN							23U
+
+#define C_CHARGING_DATA_LEN     				188U
+#define C_CHARGING_DATA_GUN_RESERVE_LEN     	17U
+
+#define C_IMD_DATA_LEN     						106U
+#define C_IMD_DATA_GUN_RESERVE_LEN     			24U
+
+#define C_METER_DATA_LEN     					116U
+#define C_METER_DATA_GUN_RESERVE_LEN     		24U
+
+#define C_POS_DATA_LEN     						57U
+#define C_POS_DATA_RESERVE_LEN     				24U
+
+#define C_RFID_DATA_LEN     					41U
+#define C_RFID_DATA_RESERVE_LEN     			24U
+
+#define C_HMI_DATA_LEN                  		41U
+#define C_HMI_DATA_RESERVE_LEN                  24U
+
+#define C_SECC_DATA_LEN                 		84U
+#define C_SECC_DATA_GUN_RESERVE_LEN           	24U
+
+#define C_CIG_DATA_LEN                 			93U
+#define C_CIG_DATA_RESERVE_LEN           		24U
+
+#define C_STOP_CHARGE_LEN     					66U
+#define C_STOP_CHARGE_RESERVE_LEN     			12U
+
+#define C_CHARGING_BILL_LEN     				125U
+#define C_CHARGING_BILL_RESERVE_LEN     		48U
+
+#define C_EXTERNAL_DEVICE_DATA_LEN      		290U
+#define C_EXTERNAL_DEVICE_DATA_RESERVE_LEN      16U
+
+#define C_SERVERSTART_CHARGE_ANS_LEN            1U
+#define C_SERVERSTOP_CHARGE_ANS_LEN             1U
+#define C_BOOK_CHARGE_ANS_LEN                   1U
+#define C_CANCLEBOOK_CHARGE_ANS_LEN             1U
+#define C_AMOUNT_ANS_LEN             			1U
+#define C_CHARGEPOINT_CONTROL_ANS_LEN           1U
+#define C_SERVER_CONFIG_ANS_LEN                 1U
+#define C_SERVER_STATUS_ANS_LEN                 1U
+#define C_SERVER_FAULT_ANS_LEN                  1U
+#define C_SERVER_TEST_CONTROL_ANS_LEN           1U
+
+#define C_SERVER_QUERY_STATUS_ANS_LEN   				282U
+#define C_SERVER_QUERY_STATUS_ANS_PILE_RESERVE_LEN    	39U
+#define C_SERVER_QUERY_STATUS_ANS_GUN_RESERVE_LEN   	50U
+
+//平台下发报文数据长度
+#define S_LOGIN_IN_ANS_LEN				5U
+#define S_GUN_STATUS_DATA_ANS_LEN     	5U
+#define S_GUN_AUTH_ANS_LEN				2U
+#define S_SERVERSTART_CHARGE_LEN        30U
+#define S_SERVERSTOP_CHARGE_LEN         26U
+#define S_BOOK_CHARGE_LEN               26U
+#define S_CANCELBOOK_CHARGE_LEN			28U
+#define S_AMOUNT_CMD_LEN 				29U
+#define S_GUN_CONTROL_LEN 				87U
+#define S_SET_GUN_PARAM_LEN				216U
+#define S_CCU_UPDATE_LEN				260U
+#define S_SECC_UPDATE_LEN				260U
+#define S_SERVER_STATUS_LEN				50U
+#define S_SERVER_REQ_SECC_LOG_LEN       1U
+#define S_SERVER_SELF_STATUS_LEN        52U
+#define S_SERVER_TEST_STATUS_LEN		17U
+
+//升级
+#define UPGRADE_REQUEST   				0x0001
+#define PREPARE_UPGRADE   				0x0002
+#define START_UPGRADE     				0x0003
+#define UPGRADE_DATA      				0x0004
+#define END_UPGRADE       				0x0005
+#define UPGRADE_CHECK     				0x0006
+
+//报文发送间隔时间
+#define LOGIN_TIMER_PERIOD_MS    		6000
+#define HEART_TIMER_PERIOD_MS    		3000
+#define AUTH_TIMER_PERIOD_MS      		5000
+#define CHARGING_TIMER_PERIOD_MS   		300
+#define STOP_CHARGE_TIMER_PERIOD_MS     4000
+#define USER_ORDER_RECEIVE_PERIOD_MS	4000
+#define FINISH_CHARGE_TIMER_PERIOD_MS   4000
+
+#define DEVICE_TIMER_PERIOD_MS    		10000
+
+//报文未响应上限次数
+#define LOGIN_UNANS_CNT_LIMIT           3U
+#define HEART_UNANS_CNT_LIMIT           3U
+#define CHARGINF_UNANS_CNT_LIMIT		9U
+#define AUTH_UNANS_CNT_LIMIT            3U
+
+#pragma pack(1)
+
+//启动鉴权状态
+enum
+{
+	AUTH_FAILED = 0,
+	AUTH_SUCCESS = 1
+};
+
+//故障注入故障发生/恢复区域
+enum
+{
+	PILE_WARN  	= 0,
+	PILE_FAULT 	= 1,
+	GUNA_WARM 	= 2,
+	GUNA_FAULT 	= 3,
+	GUNB_WARM	= 4,
+	GUNB_FAULT  = 5
+};
+
+//单次报文重发定时器
+enum
+{
+	 AUTH_TIMER					= 0,//鉴权报文发送定时器
+	 CHARGING_TIMER				= 1,//充电实时数据报文发送定时器
+	 STOP_CHARGE_TIMER			= 2,//请求停止充电报文定时器
+	 USER_ORDER_RECEIVE_TIMER	= 3, //用户账单接受定时器
+	 FINISH_CHARGE_TIMER		= 4	//结束充电报文定时器
+};
+
+//TCP私有协议包头
+typedef struct{
+	U8 ucPile_addr;	//充电桩地址
+	U16 unMsg_cmd;	//cmd
+	U16 unMsg_id;;	//报文唯一id
+	U16 unMsg_len;	//数据长度
+}MessageHead_t;
+
+//外设模块控制
+typedef struct{
+	TimerHandle_t sTimer_device;
+	BOOL bDevice_timeup_flag;
+}Device_Msg_Control_t;
+
+//告警/故障类型
+typedef struct
+{
+	U8 pile_warn_flag:1;	//桩告警
+	U8 pile_error_flag:1;	//桩故障
+	U8 gun_warn_flag_A:1;	//A枪告警
+	U8 gun_error_flag_A:1;	//A枪故障
+	U8 gun_warn_flag_B:1;	//B枪告警
+	U8 gun_error_flag_B:1;	//B枪故障
+	U8 reserve:2;
+}Alarm_Area_Set_t;
+
+//平台启动充电报文解析
+typedef struct
+{
+	U8 ucGun_id;
+	U8 ucOrder[4];
+	U8 ucStart_type;
+	U8 ucAuth_status;
+}Parse_0020_t;
+
+typedef struct
+{
+	BOOL bReboot_flag;		//重启标志位
+	U8 ucPile_config_mode;	//桩模式配置
+	BOOL bSPD_enable_flag;	//防雷使能
+	BOOL bDoor_enable_flag;	//门禁使能
+	BOOL bWater_enable_flag;//水浸使能
+	BOOL bHit_enable_flag;	//防撞击使能
+	BOOL bMCB_enable_flag;	//塑壳使能
+	U8 reserve0[24];		//预留
+	U8 ucGun_id_A;			//A枪id
+	U16 unAdmin_limit_power_A;//平台最大限制功率
+	U8 ucGun_disable_status_A;//A枪禁用
+	U8 reserve1[24];		//预留
+	U8 ucGun_id_B;			//B枪id
+	U16 unAdmin_limit_power_B;//平台最大限制功率
+	U8 ucGun_disable_status_B;//B枪禁用
+	U8 reserve2[24];		//预留
+}Gun_Control_Parse_t;
+
+typedef struct
+{
+    SemaphoreHandle_t tcp_send_mutex;
+    SemaphoreHandle_t alarm_mutex;
+    SemaphoreHandle_t client_upload_log_sem;
+}SystemSemaphores_t;
+
+typedef struct
+{
+    U8  ucSendBuff[SEND_BUFF_SIZE];
+    U8  ucResponseBuff[SEND_BUFF_SIZE];
+    U32 uiResponseLength;
+    U32 uiSendLength;
+}CommBuffs_t;
+
+typedef struct
+{
+    U16          unMessageId;
+    U8           ucAlarmFlag;
+    MessageHead_t *psMsgHead;
+} LocalState_t;
+
+#pragma pack()
+
+static void TimerSingleStart(const U8 ucTimer_flag);
+
+#endif /* APP_CLIENT_TCP_CLIENT_H_ */

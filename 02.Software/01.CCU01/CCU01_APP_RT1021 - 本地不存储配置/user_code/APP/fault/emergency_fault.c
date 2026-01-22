@@ -1,0 +1,1928 @@
+/*
+ * emergency_fault.c
+ *
+ *  Created on: 2024年9月25日
+ *      Author: qjwu
+ */
+#include <stdio.h>
+#include <string.h>
+#include "FreeRTOS.h"
+#include "task.h"
+#include "timers.h"
+#include "hal_sys_IF.h"
+
+#include "emergency_fault.h"
+#include "tcp_client_IF.h"
+#include "SignalManage.h"
+#include "fsl_gpio.h"
+#include "uart_comm.h"
+#include "charge_comm_IF.h"
+#include "charge_general.h"
+#include "GB_27930_comm.h"
+#include "cig_IF.h"
+
+BOOL g_bAuth_test = FALSE;
+__BSS(SRAM_OC) Secc_Fault_t g_sSecc_fault[2] = {0};
+__BSS(SRAM_OC) Gun_Fault_t g_sGun_fault[2] = {0};
+__BSS(SRAM_OC) Gun_Warn_t g_sGun_warn[2] = {0};
+U8 *g_pImd_fault[2] = {NULL, NULL};
+U8 *g_pMeter_fault[2] = {NULL, NULL};
+__BSS(SRAM_OC) static Fault_Tirgger_Cnt_t g_sFault_tirgger_cnt = {0};
+__BSS(SRAM_OC) static Fault_restore_Cnt_t g_sFault_restore_Cnt = {0};
+static SemaphoreHandle_t g_sAlarm_mutex = NULL;
+static BOOL s_bGun_timer_flag[2] = {0};
+static U16 GunReturn_cnt[2] = {0};
+
+/**
+ * @brief 桩本身故障检测
+ * @param ucGun_id：枪id
+ * @return TRUE:有故障  FALSE:无故障
+ */
+BOOL PileFaultCodeCheck(const U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return TRUE;
+	}
+
+	S32 iFault_code_flag = 0;
+	U64 u64Gun_code = 0;
+	U32 uiFault_code_flag = 0;
+
+	(void)GetSigVal(ALARM_ID_PILE_ERROR_LEV_2, &iFault_code_flag);
+	uiFault_code_flag |= g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag;
+	uiFault_code_flag |= g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag;
+	u64Gun_code |= g_sSecc_fault[ucGun_id].sSecc_fault_first.u64Whole_flag;
+	u64Gun_code |= g_sSecc_fault[ucGun_id].sSecc_fault_second.u64Whole_flag;
+	uiFault_code_flag |= g_sSecc_fault[ucGun_id].sSecc_fault_third.uiWhole_flag;
+	u64Gun_code |= g_sSecc_fault[ucGun_id].sSecc_fault_fourth.u64Whole_flag;
+	u64Gun_code |= g_sSecc_fault[ucGun_id].sSecc_fault_fifth.unWhole_flag;
+
+	//有不可恢复故障，拔枪不恢复
+	if ((0 != iFault_code_flag) || (0U != u64Gun_code) || (0U != uiFault_code_flag))
+	{
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+/**
+ * @brief 检测拔枪是否可将告警状态恢复
+ * @param
+ * @return TRUE:可恢复  FALSE；不可恢复
+ */
+BOOL RecoverableWarnCodeCheck(const U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return FALSE;
+	}
+
+	U32 uiFault_code_flag = 0;
+
+	uiFault_code_flag |= g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag;
+
+	if (0UL != uiFault_code_flag)
+	{
+		//回枪/枪温告警不恢复
+		if ((4U == uiFault_code_flag) || (8U == uiFault_code_flag) || (12U == uiFault_code_flag))
+		{
+			return FALSE;
+		}
+		else
+		{
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+/**
+ * @brief 检测拔枪是否可将故障状态恢复
+ * @param ucGun_id：枪id
+ * @return TRUE:可恢复  FALSE:不可恢复
+ */
+BOOL RecoverableFaultCodeCheck(const U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return FALSE;
+	}
+
+	S32 iFault_code_flag = 0;
+	U32 uiFault_code_flag = 0;
+
+	(void)GetSigVal(ALARM_ID_PILE_ERROR_LEV_2, &iFault_code_flag);
+	uiFault_code_flag |= g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag;
+	uiFault_code_flag |= g_sGun_fault[ucGun_id].sUnnecessary_upload_fault.ucWhole_flag;
+	//有不可恢复故障，拔枪不恢复
+	if ((0 != iFault_code_flag) || (0U != uiFault_code_flag))
+	{
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/**
+ * @brief 枪故障码检测函数
+ * @param ucGun_id：枪id
+ * @return TRUE:有故障  FALSE:无故障
+ */
+Alarm_Status_t FaultCodeCheck(const U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ALARM_STATUS;
+	}
+
+	U64 u64Fault_code_flag = 0;
+	S32 iPile_code = 0;
+	(void)GetSigVal(ALARM_ID_PILE_ERROR_LEV_2, &iPile_code);
+
+	u64Fault_code_flag |= g_sSecc_fault[ucGun_id].sSecc_fault_first.u64Whole_flag;
+	u64Fault_code_flag |= g_sSecc_fault[ucGun_id].sSecc_fault_second.u64Whole_flag;
+	u64Fault_code_flag |= g_sSecc_fault[ucGun_id].sSecc_fault_third.uiWhole_flag;
+	u64Fault_code_flag |= g_sSecc_fault[ucGun_id].sSecc_fault_fourth.u64Whole_flag;
+	u64Fault_code_flag |= g_sSecc_fault[ucGun_id].sSecc_fault_fifth.unWhole_flag;
+	u64Fault_code_flag |= g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag;
+	u64Fault_code_flag |= g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag;
+	u64Fault_code_flag |= g_sGun_fault[ucGun_id].sUnnecessary_upload_fault.ucWhole_flag;
+
+	if (g_pMeter_fault[ucGun_id] != NULL)
+	{
+		u64Fault_code_flag |= *g_pMeter_fault[ucGun_id];
+	}
+	if (g_pImd_fault[ucGun_id] != NULL)
+	{
+		u64Fault_code_flag |= *g_pImd_fault[ucGun_id];
+	}
+	//存在故障
+	if ((0UL != u64Fault_code_flag) || (0 != iPile_code))
+	{
+		return ALARM_STATUS;
+	}
+	else//不存在故障，判定告警
+	{
+		(void)GetSigVal(ALARM_ID_PILE_ERROR_LEV_1, &iPile_code);
+		u64Fault_code_flag |= g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag;
+
+		//存在告警
+		if ((0UL != u64Fault_code_flag) || (0 != iPile_code))
+		{
+			return WARNING_STATUS;
+		}
+	}
+
+	return NORMAL_STATUS;
+}
+
+/**
+ * @brief: 释放故障表更改信号量
+ * @param:
+ * @return
+ */
+static void AlarmSemRelease(void)
+{
+	//释放故障表更改信号量
+	if (NULL != g_sAlarm_tigger_sem)
+	{
+		(void)xSemaphoreGive(g_sAlarm_tigger_sem);
+	}
+}
+
+/**
+ * @brief: 故障复位控制函数
+ * @param: ptr 故障数据
+ * @param: type 故障大小类型
+ * @param: bit 移位长度
+ * @return
+ */
+static void ClearBitGeneric(void *ptr, const StructType type, const U32 bit)
+{
+	switch (type)
+	{
+	case BIT8_STRUCT:
+		if (bit < 8U)
+		{
+            U8 flags;
+            (void)memcpy((void*)&flags, ptr, sizeof(flags));
+            flags &= ~ (1U << bit);
+            (void)memcpy(ptr, (const void*)&flags, sizeof(flags));
+		}
+		break;
+	case BIT16_STRUCT:
+		if (bit < 16U)
+		{
+            U16 flags;
+            (void)memcpy((void*)&flags, ptr, sizeof(flags));
+            flags &= ~ ((U16)1 << bit);
+            (void)memcpy(ptr, (const void*)&flags, sizeof(flags));
+		}
+		break;
+	case BIT32_STRUCT:
+		if (bit < 32U)
+		{
+            U32 flags;
+            (void)memcpy((void*)&flags, ptr, sizeof(flags));
+            flags &= ~ (1UL << bit);
+            (void)memcpy(ptr, (const void*)&flags, sizeof(flags));
+		}
+		break;
+	case BIT64_STRUCT:
+		if (bit < 64U)
+		{
+            U64 flags;
+            (void)memcpy((void*)&flags, ptr, sizeof(flags));
+            flags &= ~ (1ULL << bit);
+            (void)memcpy(ptr, (const void*)&flags, sizeof(flags));
+		}
+		break;
+	default:
+		my_printf(USER_ERROR, "%s:%d type error = %d\n", __FILE__, __LINE__, type);
+		break;
+	}
+}
+
+/**
+ * @brief: 故障注入测试函数：判定枪相应故障/告警是否置位，若置位则恢复
+ * @param: ptr 故障数据
+ * @param: type 故障大小类型
+ * uiFault_code 故障码
+ * @return
+ */
+void GunAlarmResetTest(void *ptr, const StructType type, const U32 uiFault_code)
+{
+	if (NULL == ptr)
+	{
+		return;
+	}
+
+	//故障注入模式使用
+	if (g_sPile_data.ucPile_config_mode == FAULT_INJECTION_MODE)
+	{
+		if (pdTRUE == xSemaphoreTake(g_sAlarm_mutex, portMAX_DELAY))
+		{
+			ClearBitGeneric(ptr, type, uiFault_code);
+			AlarmSemRelease();
+			(void)xSemaphoreGive(g_sAlarm_mutex);
+		}
+	}
+
+	return;
+}
+
+/**
+ * @brief: 判定枪相应故障/告警是否置位，若置位则恢复
+ * @param: ptr 故障数据
+ * @param: type 故障大小类型
+ * uiFault_code 故障码
+ * @return
+ */
+void GunAlarmReset(void *ptr, StructType type, const U32 uiFault_code)
+{
+	if (NULL == ptr)
+	{
+		return;
+	}
+
+	//非故障注入模式启用
+	if (g_sPile_data.ucPile_config_mode != FAULT_INJECTION_MODE)
+	{
+		if (pdTRUE == xSemaphoreTake(g_sAlarm_mutex, portMAX_DELAY))
+		{
+			ClearBitGeneric(ptr, type, uiFault_code);
+			AlarmSemRelease();
+			(void)xSemaphoreGive(g_sAlarm_mutex);
+		}
+	}
+
+	return;
+}
+
+/**
+ * @brief: 判定枪相应故障/告警是否置位，未置位则置位
+ * @param: ptr 故障数据
+ * @param: type 故障大小类型
+ * uiFault_code 故障码
+ * @return
+ */
+void GunAlarmSet(void *ptr, const StructType type, const U32 uiFault_code)
+{
+	if (NULL == ptr)
+	{
+		return;
+	}
+
+#ifdef	TEST_MODE
+	//认证故障复用急停
+	g_bAuth_test = TRUE;
+#endif
+
+	if (pdTRUE == xSemaphoreTake(g_sAlarm_mutex, portMAX_DELAY))
+	{
+		switch (type)
+		{
+		case BIT8_STRUCT:
+			if (uiFault_code < 8U)
+			{
+                U8 flags;
+                (void)memcpy((void*)&flags, ptr, sizeof(flags));
+                flags |= (1U << uiFault_code);
+                (void)memcpy(ptr, (const void*)&flags, sizeof(flags));
+				AlarmSemRelease();
+			}
+			break;
+		case BIT16_STRUCT:
+			if (uiFault_code < 16U)
+			{
+                U16 flags;
+                (void)memcpy((void*)&flags, ptr, sizeof(flags));
+                flags |= ((U16)1 << uiFault_code);
+                (void)memcpy(ptr, (const void*)&flags, sizeof(flags));
+				AlarmSemRelease();
+			}
+			break;
+		case BIT32_STRUCT:
+			if (uiFault_code < 32U)
+			{
+                U32 flags;
+                (void)memcpy((void*)&flags, ptr, sizeof(flags));
+                flags |= (1UL << uiFault_code);
+                (void)memcpy(ptr, (const void*)&flags, sizeof(flags));
+				AlarmSemRelease();
+			}
+			break;
+		case BIT64_STRUCT:
+			if (uiFault_code < 64U)
+			{
+                U64 flags;
+                (void)memcpy((void*)&flags, ptr, sizeof(flags));
+                flags |= (1ULL << uiFault_code);
+                (void)memcpy(ptr, (const void*)&flags, sizeof(flags));
+				AlarmSemRelease();
+			}
+			break;
+		default:
+			my_printf(USER_ERROR, "%s:%d type error = %d\n", __FILE__, __LINE__, type);
+			break;
+		}
+		(void)xSemaphoreGive(g_sAlarm_mutex);
+	}
+
+	return;
+}
+
+/**
+ * @brief: 故障注入测试函数：判定桩相应故障/告警是否置位，若置位则恢复
+ * @param: uiSignal_id：故障码
+ * @return
+ */
+void PileAlarmResetTest(const U32 uiSignal_id)
+{
+	//故障注入模式使用
+	if (g_sPile_data.ucPile_config_mode == (U8)FAULT_INJECTION_MODE)
+	{
+		S32 iTmp_flag = 0;
+		BOOL bRelease_flag = 0;
+
+		(void)GetSigVal(uiSignal_id, &iTmp_flag);
+		//恢复故障
+		if ((S32)FALSE != iTmp_flag)
+		{
+			(void)SetSigVal(uiSignal_id, (S32)FALSE);
+			bRelease_flag = TRUE;
+			my_printf(USER_INFO, "DEBUG_MODE:restore pile alarm: id = %d\n", uiSignal_id);
+		}
+		else
+		{
+			return ;
+		}
+
+		//判定改故障恢复后是否还有其他故障
+		if ((uiSignal_id > ALARM_ID_PILE_ERROR_BEGIN_FLAG)
+				&& (uiSignal_id < ALARM_ID_PILE_ERROR_END_FLAG))
+		{
+			U32 uiCnt = 0;
+			for (U32 i = ALARM_ID_PILE_ERROR_BEGIN_FLAG+1U; i < ALARM_ID_PILE_ERROR_END_FLAG; i++)
+			{
+				(void)GetSigVal(i, &iTmp_flag);
+				uiCnt += (U32)iTmp_flag;
+			}
+			//没有其他故障
+			if (0UL == uiCnt)
+			{
+				(void)SetSigVal(ALARM_ID_PILE_ERROR_LEV_2, (S32)FALSE);
+				my_printf(USER_DEBUG, "All pile faults have been restored\n");
+			}
+		}
+
+		//判定改告警故障恢复后是否还有其他告警
+		if ((uiSignal_id > ALARM_ID_PILE_ALARM_BEGIN_FLAG)
+				&& (uiSignal_id < ALARM_ID_PILE_ALARM_END_FLAG))
+		{
+			U32 uiCnt = 0;
+			for (U32 i = ALARM_ID_PILE_ALARM_BEGIN_FLAG+1U; i < ALARM_ID_PILE_ALARM_END_FLAG; i++)
+			{
+				(void)GetSigVal(i, &iTmp_flag);
+				uiCnt += (U32)iTmp_flag;
+			}
+			//没有其他告警
+			if (0UL == uiCnt)
+			{
+				(void)SetSigVal(ALARM_ID_PILE_ERROR_LEV_1, (S32)FALSE);
+			}
+		}
+
+		//用标志位判定是否触发，防止立即触发出现ALARM_ID_PILE_ERROR_LEV还未恢复已上传心跳，出现状态不同步情况
+		if (bRelease_flag)
+		{
+			AlarmSemRelease();
+		}
+	}
+
+	return;
+}
+
+/**
+ * @brief: 判定桩相应故障/告警是否置位，若置位则恢复
+ * @param: uiSignal_id：故障码
+ * @return
+ */
+void PileAlarmReset(const U32 uiSignal_id)
+{
+	//非故障注入模式使用
+	if (g_sPile_data.ucPile_config_mode != (U8)FAULT_INJECTION_MODE)
+	{
+		S32 iTmp_flag = 0;
+		BOOL bRelease_flag = 0;
+
+		(void)GetSigVal(uiSignal_id, &iTmp_flag);
+		//恢复故障
+		if ((S32)FALSE != iTmp_flag)
+		{
+			(void)SetSigVal(uiSignal_id, (S32)FALSE);
+			bRelease_flag = TRUE;
+			my_printf(USER_INFO, "restore pile alarm: id = %d\n", uiSignal_id);
+		}
+		else
+		{
+			return ;
+		}
+
+		//判定改故障恢复后是否还有其他故障
+		if ((uiSignal_id > ALARM_ID_PILE_ERROR_BEGIN_FLAG)
+				&& (uiSignal_id < ALARM_ID_PILE_ERROR_END_FLAG))
+		{
+			U32 uiCnt = 0;
+			for (U32 i = ALARM_ID_PILE_ERROR_BEGIN_FLAG+1U; i < ALARM_ID_PILE_ERROR_END_FLAG; i++)
+			{
+				(void)GetSigVal(i, &iTmp_flag);
+				uiCnt += (U32)iTmp_flag;
+			}
+			//没有其他故障
+			if (0U == uiCnt)
+			{
+				(void)SetSigVal(ALARM_ID_PILE_ERROR_LEV_2, (S32)FALSE);
+				my_printf(USER_INFO, "All pile faults have been restored\n");
+			}
+		}
+
+		//判定该告警故障恢复后是否还有其他告警
+		if ((uiSignal_id > ALARM_ID_PILE_ALARM_BEGIN_FLAG)
+				&& (uiSignal_id < ALARM_ID_PILE_ALARM_END_FLAG))
+		{
+			U32 uiCnt = 0;
+			for (U32 i = ALARM_ID_PILE_ALARM_BEGIN_FLAG+1U; i < ALARM_ID_PILE_ALARM_END_FLAG; i++)
+			{
+				(void)GetSigVal(i, &iTmp_flag);
+				uiCnt += (U32)iTmp_flag;
+			}
+			//没有其他告警
+			if (0UL == uiCnt)
+			{
+				(void)SetSigVal(ALARM_ID_PILE_ERROR_LEV_1, (S32)FALSE);
+			}
+		}
+
+		//用标志位判定是否释放，防止立即释放出现ALARM_ID_PILE_ERROR_LEV还未恢复已上传心跳，出现状态不同步情况
+		if (TRUE == bRelease_flag)
+		{
+			AlarmSemRelease();
+			bRelease_flag = FALSE;
+		}
+	}
+
+	return;
+}
+
+/**
+ * @brief: 判定桩相应故障/告警是否置位，未置位则置位
+ * @param: uiSignal_id：故障码
+ * @return
+ */
+void PileAlarmSet(const U32 uiSignal_id)
+{
+	S32 iTmp_flag = 0;
+
+	(void)GetSigVal(uiSignal_id, &iTmp_flag);
+	//置位标志位
+	if ((S32)TRUE == iTmp_flag)
+	{
+		return ;
+	}
+
+	(void)SetSigVal(uiSignal_id, (S32)TRUE);
+	my_printf(USER_ERROR, "%s:%d trigger pile alarm: id = %d\n", __FILE__, __LINE__, uiSignal_id);
+
+	//判定是否属于故障
+	if ((uiSignal_id > ALARM_ID_PILE_ERROR_BEGIN_FLAG)
+			&& (uiSignal_id < ALARM_ID_PILE_ERROR_END_FLAG))
+	{
+#ifdef	TEST_MODE
+		//认证故障复用急停
+		g_bAuth_test = TRUE;
+#endif
+		(void)GetSigVal(ALARM_ID_PILE_ERROR_LEV_2, &iTmp_flag);
+		//置位故障级别标志位
+		if ((S32)TRUE != iTmp_flag)
+		{
+			(void)SetSigVal(ALARM_ID_PILE_ERROR_LEV_2, (S32)TRUE);
+			//AlarmSemRelease();
+		}
+	}
+
+	//判定是否属于告警
+	if ((uiSignal_id > ALARM_ID_PILE_ALARM_BEGIN_FLAG)
+			&& (uiSignal_id < ALARM_ID_PILE_ALARM_END_FLAG))
+	{
+		(void)GetSigVal(ALARM_ID_PILE_ERROR_LEV_1, &iTmp_flag);
+		//置位告警级别标志位
+		if ((S32)TRUE != iTmp_flag)
+		{
+			(void)SetSigVal(ALARM_ID_PILE_ERROR_LEV_1, (S32)TRUE);
+			//AlarmSemRelease();
+		}
+	}
+	AlarmSemRelease();
+
+	return;
+}
+
+/**
+ * @brief: 复位枪归位后需要恢复的故障和告警
+ * @param: ucGun_id:枪id
+ * @return
+ */
+void GunReturnResetAlarm(const U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	//复位回枪后需复位的枪告警
+	g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag = (U16)FALSE;
+	//复位回枪后需复位的枪故障
+	g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag = (U32)FALSE;
+	//复位回枪后需复位的SECC故障
+	g_sSecc_fault[ucGun_id].sSecc_fault_first.u64Whole_flag = (U64)FALSE;
+	g_sSecc_fault[ucGun_id].sSecc_fault_second.u64Whole_flag = (U64)FALSE;
+	g_sSecc_fault[ucGun_id].sSecc_fault_third.uiWhole_flag = (U32)FALSE;
+	g_sSecc_fault[ucGun_id].sSecc_fault_fourth.u64Whole_flag = (U64)FALSE;
+	g_sSecc_fault[ucGun_id].sSecc_fault_fifth.unWhole_flag = (U16)FALSE;
+	//复位绝缘监测故障
+	if (NULL != g_pImd_fault[ucGun_id])
+	{
+		*g_pImd_fault[ucGun_id] = 0;
+	}
+	//复位电表故障
+	if (NULL != g_pMeter_fault[ucGun_id])
+	{
+		*g_pMeter_fault[ucGun_id] = 0;
+	}
+
+	AlarmSemRelease();
+	my_printf(USER_INFO, "%s unplug restore Recoverable alarm\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+}
+
+static void GunReturnTimeoutcheck(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	if (GunReturn_cnt[ucGun_id] < (GUN_RETURN_TIMER_PERIOD_MS/TASK_DELAY_PERIOD))
+	{
+		GunReturn_cnt[ucGun_id]++;
+	}
+	else
+	{
+		//置位枪未归位告警
+		if (g_sGun_warn[ucGun_id].sRecoverable_warn.sItem.gun_return_timeout != (U8)TRUE)
+		{
+			GunAlarmSet(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_GUN_RETURN_TIMEOUT);
+			my_printf(USER_ERROR, "%s:%d %s return timeout warning\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+		}
+	}
+}
+
+/**
+ * @brief: 恢复回枪检测告警
+ * @param:
+ * @return
+ */
+static void GunRestoreReturnCheck(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	GunReturn_cnt[ucGun_id] = 0;
+
+	if (g_sGun_warn[ucGun_id].sRecoverable_warn.sItem.gun_return_timeout != (U8)FALSE)
+	{
+		GunAlarmReset(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_GUN_RETURN_TIMEOUT);
+		my_printf(USER_INFO, "%s restore gun return timeout warning\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+	}
+}
+
+/**
+ * @brief: 当前未归位且未插枪时开启计时
+ * @param:
+ * @return
+ */
+static void GunReturnCheck(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	//CP状态为未插枪
+	if ((U8)UNPLUGGED == g_sGun_data[ucGun_id].ucConnect_status)
+	{
+		//故障置位
+		GunReturnTimeoutcheck(ucGun_id);
+	}
+	else
+	{
+		//枪未归位情况下连接车，取消未归位告警
+		GunRestoreReturnCheck(ucGun_id);
+	}
+	g_sGun_data[ucGun_id].bGun_return_flag = FALSE;
+}
+
+/**
+ * @brief: 回枪检测函数
+ * @param:
+ * @return
+ */
+static void RunEmergencyGunReturnCheck(void)
+{
+	//枪座IO状态为拔枪状态
+	//if ((U32)FALSE == GET_GUN1_FB_STATUS())//美标
+	if ((U32)TRUE == GET_GUN1_FB_STATUS())//欧标
+	{
+		//滤波
+		if (g_sFault_tirgger_cnt.ucGunAReturn_cnt < 255U)
+		{
+			g_sFault_tirgger_cnt.ucGunAReturn_cnt++;
+		}
+		if (g_sFault_tirgger_cnt.ucGunAReturn_cnt > COMM_FAULT_TRIGGER_CNT)
+		{
+			GunReturnCheck(GUN_A);
+		}
+	}
+	else
+	{
+		if (g_sFault_restore_Cnt.ucGunAReturn_cnt < 255U)
+		{
+			g_sFault_restore_Cnt.ucGunAReturn_cnt++;
+		}
+		if (g_sFault_restore_Cnt.ucGunAReturn_cnt > FAULT_RESTORE_CNT)
+		{
+			g_sGun_data[GUN_A].bGun_return_flag = TRUE;
+			g_sFault_restore_Cnt.ucGunAReturn_cnt = 0;
+			g_sFault_tirgger_cnt.ucGunAReturn_cnt = 0;
+			//结束拔枪记时
+			GunRestoreReturnCheck(GUN_A);
+		}
+	}
+
+	//枪座IO状态为拔枪状态
+	//if ((U32)FALSE == GET_GUN2_FB_STATUS())//美标
+	if ((U32)TRUE == GET_GUN2_FB_STATUS())//欧标
+	{
+		//滤波
+		if (g_sFault_tirgger_cnt.ucGunBReturn_cnt < 255U)
+		{
+			g_sFault_tirgger_cnt.ucGunBReturn_cnt++;
+		}
+		if (g_sFault_tirgger_cnt.ucGunBReturn_cnt > COMM_FAULT_TRIGGER_CNT)
+		{
+			GunReturnCheck(GUN_B);
+		}
+	}
+	else
+	{
+		if (g_sFault_restore_Cnt.ucGunBReturn_cnt < 255U)
+		{
+			g_sFault_restore_Cnt.ucGunBReturn_cnt++;
+		}
+		if (g_sFault_restore_Cnt.ucGunBReturn_cnt > FAULT_RESTORE_CNT)
+		{
+			g_sGun_data[GUN_B].bGun_return_flag = TRUE;
+			g_sFault_restore_Cnt.ucGunBReturn_cnt = 0;
+			g_sFault_tirgger_cnt.ucGunBReturn_cnt = 0;
+			//结束拔枪记时
+			GunRestoreReturnCheck(GUN_B);
+		}
+	}
+}
+
+/**
+ * @brief: 急停检测函数
+ * @param:
+ * @return
+ */
+static void RunEmergencyScram(void)
+{
+	if (((U32)TRUE == GET_DI_SCRAM_STATUS()) || (TRUE == g_bAuth_test))
+	{
+#ifdef	TEST_MODE
+		//认证故障复用急停
+		g_bAuth_test = TRUE;
+#endif
+		//滤波
+		g_sFault_tirgger_cnt.ucScram_cnt++;
+		if (g_sFault_tirgger_cnt.ucScram_cnt > EMERGENCY_FAULT_TIGGER_CNT)
+		{
+			g_sFault_tirgger_cnt.ucScram_cnt = 0;
+			if ((U32)TRUE == GET_DI_SCRAM_STATUS())
+			{
+				PileAlarmSet(ALARM_ID_ESTOP_ERROR);
+				g_sPile_data.bEstop_io_status = TRUE;
+				//急停属于特殊故障，测试要求需要在100ms内断开继电器
+				if (TRUE == CheckChargingStatus(GUN_B))
+				{
+					g_sGun_data[GUN_B].sTemp.ucStop_Charge_type = (U8)FAULT_STOP_MODE;
+					g_sGB_Charger_data[GUN_B].sCST.sFault_reason.sItem.unEstop = TRUE;
+#ifdef TEST_MODE
+					//此时上传逻辑没走完会导致PCU获取不到具体故障类型,仅用于认证测试
+					SendStopChargeMsg(GUN_B);
+					//延时一段时间用于降压
+					vTaskDelay(70);
+					RelayControl_B(POSITIVE_RELAY, OPEN_CONTROL);
+					vTaskDelay(10);
+					RelayControl_B(NEGATIVE_RELAY, OPEN_CONTROL);
+					vTaskDelay(1000);
+#endif
+				}
+				if (TRUE == CheckChargingStatus(GUN_A))
+				{
+					g_sGun_data[GUN_A].sTemp.ucStop_Charge_type = (U8)FAULT_STOP_MODE;
+					g_sGB_Charger_data[GUN_A].sCST.sFault_reason.sItem.unEstop = TRUE;
+#ifdef TEST_MODE
+					//此时上传逻辑没走完会导致PCU获取不到具体故障类型,仅用于认证测试
+					SendStopChargeMsg(GUN_A);
+					//延时一段时间用于降压
+					vTaskDelay(70);
+					RelayControl_A(POSITIVE_RELAY, OPEN_CONTROL);
+					vTaskDelay(10);
+					RelayControl_A(NEGATIVE_RELAY, OPEN_CONTROL);
+					vTaskDelay(1000);
+#endif
+				}
+			}
+		}
+
+		return;
+	}
+	g_sFault_restore_Cnt.ucScram_cnt++;
+	if (g_sFault_restore_Cnt.ucScram_cnt > FAULT_RESTORE_CNT)
+	{
+		g_sFault_restore_Cnt.ucScram_cnt = 0;
+		g_sFault_tirgger_cnt.ucScram_cnt = 0;
+		PileAlarmReset(ALARM_ID_ESTOP_ERROR);
+		g_sPile_data.bEstop_io_status = FALSE;
+	}
+
+	return;
+}
+
+/**
+ * @brief: 门禁检测函数
+ * @param:
+ * @return
+ */
+static void RunEmergencyDoorGuard(void)
+{
+	if (DOOR_ENABLE == g_sPile_data.bDoor_enable_flag)
+	{
+		//监测
+		if ((U32)TRUE == GET_DI_DOOR_STATUS())
+		{
+			//滤波
+			g_sFault_tirgger_cnt.ucDoorGuard_cnt++;
+			if (g_sFault_tirgger_cnt.ucDoorGuard_cnt > COMM_FAULT_TRIGGER_CNT)
+			{
+				PileAlarmSet(ALARM_ID_DOOR_GUARD_ERROR);
+				g_sPile_data.bDoor_io_status = TRUE;
+				g_sFault_tirgger_cnt.ucDoorGuard_cnt = 0;
+			}
+			return;
+		}
+		g_sFault_restore_Cnt.ucDoorGuard_cnt++;
+		if (g_sFault_restore_Cnt.ucDoorGuard_cnt > FAULT_RESTORE_CNT)
+		{
+			g_sFault_tirgger_cnt.ucDoorGuard_cnt = 0;
+			g_sFault_restore_Cnt.ucDoorGuard_cnt = 0;
+			PileAlarmReset(ALARM_ID_DOOR_GUARD_ERROR);
+			g_sPile_data.bDoor_io_status = FALSE;
+		}
+	}
+
+	return;
+}
+
+/**
+ * @brief: 水浸检测函数
+ * @param:
+ * @return
+ */
+static void RunWaterImmersionCheck(void)
+{
+	if (WATER_ENABLE == g_sPile_data.bWater_enable_flag)
+	{
+		//监测
+		if ((U32)FALSE == GET_DI_WATER_STATUS())
+		{
+			//滤波
+			g_sFault_tirgger_cnt.ucWaterImmersion_cnt++;
+			if (g_sFault_tirgger_cnt.ucWaterImmersion_cnt > COMM_FAULT_TRIGGER_CNT)
+			{
+				PileAlarmSet(ALARM_ID_WATER_IMMERSION_ERROR);
+				g_sPile_data.bWater_io_status = TRUE;
+				g_sFault_tirgger_cnt.ucWaterImmersion_cnt = 0;
+			}
+			return;
+		}
+		g_sFault_restore_Cnt.ucWaterImmersion_cnt++;
+		if (g_sFault_restore_Cnt.ucWaterImmersion_cnt > FAULT_RESTORE_CNT)
+		{
+			g_sFault_restore_Cnt.ucWaterImmersion_cnt = 0;
+			g_sFault_tirgger_cnt.ucWaterImmersion_cnt = 0;
+			PileAlarmReset(ALARM_ID_WATER_IMMERSION_ERROR);
+			g_sPile_data.bWater_io_status = FALSE;
+		}
+	}
+
+	return;
+}
+
+/**
+ * @brief: 撞击检测函数
+ * @param:
+ * @return
+ */
+static void RunHitTestCheck(void)
+{
+	if (HIT_ENABLE == g_sPile_data.bHit_enable_flag)
+	{
+		//监测
+		if ((U32)TRUE == GET_DI_HIT_STATUS())
+		{
+			//滤波
+			g_sFault_tirgger_cnt.ucHit_cnt++;
+			if (g_sFault_tirgger_cnt.ucHit_cnt > COMM_FAULT_TRIGGER_CNT)
+			{
+				PileAlarmSet(ALARM_ID_IMPACT_TEST_ERROR);
+				g_sPile_data.bHit_io_status = TRUE;
+				g_sFault_tirgger_cnt.ucHit_cnt = 0;
+			}
+			return;
+		}
+		g_sFault_restore_Cnt.ucHit_cnt++;
+		if (g_sFault_restore_Cnt.ucHit_cnt > FAULT_RESTORE_CNT)
+		{
+			g_sFault_restore_Cnt.ucHit_cnt = 0;
+			g_sFault_tirgger_cnt.ucHit_cnt = 0;
+			PileAlarmReset(ALARM_ID_IMPACT_TEST_ERROR);
+			g_sPile_data.bHit_io_status = FALSE;
+		}
+	}
+
+	return;
+}
+
+/**
+ * @brief: 塑壳检测函数
+ * @param:
+ * @return
+ */
+static void RunMCBTestCheck(void)
+{
+	if (MCB_ENABLE == g_sPile_data.bMCB_enable_flag)
+	{
+		//监测
+		if ((U32)TRUE == GET_DI_MCB_STATUS())
+		{
+			//滤波
+			g_sFault_tirgger_cnt.ucMCB_cnt++;
+			if (g_sFault_tirgger_cnt.ucMCB_cnt > COMM_FAULT_TRIGGER_CNT)
+			{
+				PileAlarmSet(ALARM_ID_PLASTIC_HOUSING_TEST_ERROR);
+				g_sPile_data.bMCB_io_status = TRUE;
+				g_sFault_tirgger_cnt.ucMCB_cnt = 0;
+			}
+			return;
+		}
+		g_sFault_restore_Cnt.ucMCB_cnt++;
+		if (g_sFault_tirgger_cnt.ucMCB_cnt > FAULT_RESTORE_CNT)
+		{
+			g_sFault_restore_Cnt.ucMCB_cnt = 0;
+			g_sFault_tirgger_cnt.ucMCB_cnt = 0;
+			PileAlarmReset(ALARM_ID_PLASTIC_HOUSING_TEST_ERROR);
+			g_sPile_data.bMCB_io_status = FALSE;
+		}
+	}
+
+	return;
+}
+
+/**
+ * @brief: 防雷回枪检测函数
+ * @param:
+ * @return
+ */
+static void RunSPDCheck(void)
+{
+	if (SPD_ENABLE == g_sPile_data.bSPD_enable_flag)
+	{
+		//监测
+		if ((U32)TRUE == GET_DI_SPD_STATUS())
+		{
+			//滤波
+			g_sFault_tirgger_cnt.ucSPD_cnt++;
+			if (g_sFault_tirgger_cnt.ucSPD_cnt > COMM_FAULT_TRIGGER_CNT)
+			{
+				PileAlarmSet(ALARM_ID_ANTITHUNDER_ERROR);
+				g_sPile_data.bSPD_io_status = TRUE;
+				g_sFault_tirgger_cnt.ucSPD_cnt = 0;
+			}
+			return;
+		}
+		g_sFault_restore_Cnt.ucSPD_cnt++;
+		if (g_sFault_tirgger_cnt.ucSPD_cnt > FAULT_RESTORE_CNT)
+		{
+			g_sFault_restore_Cnt.ucSPD_cnt = 0;
+			g_sFault_tirgger_cnt.ucSPD_cnt = 0;
+			PileAlarmReset(ALARM_ID_ANTITHUNDER_ERROR);
+			g_sPile_data.bSPD_io_status = FALSE;
+		}
+	}
+
+	return;
+}
+
+/**
+ * @brief: 熔断器检测函数
+ * @param:
+ * @return
+ */
+static void RunFuseIOCheck(void)
+{
+	if ((U32)TRUE == GET_FU1_FB_STATUS())
+	{
+		if (g_sGun_fault[GUN_A].sGeneral_fault.sItem.blown_fuse != (U8)TRUE)
+		{
+			//滤波
+			g_sFault_tirgger_cnt.ucGUNAFuse_cnt++;
+			if (g_sFault_tirgger_cnt.ucGUNAFuse_cnt > SPECIAL_FAULT_TRIGGER_CNT)
+			{
+				g_sGun_data[GUN_A].bFuse_io_status = TRUE;
+				GunAlarmSet(&g_sGun_fault[GUN_A].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_BLOWN_FUSE);
+				my_printf(USER_ERROR, "%s:%d GUN_A blown fuse fault\n", __FILE__, __LINE__);
+			}
+		}
+		//恢复复位计数
+		g_sFault_restore_Cnt.ucGUNAFuse_cnt = 0;
+	}
+	else//恢复
+	{
+		if (g_sGun_fault[GUN_A].sGeneral_fault.sItem.blown_fuse != (U8)FALSE)
+		{
+			g_sFault_restore_Cnt.ucGUNAFuse_cnt++;
+			if (g_sFault_restore_Cnt.ucGUNAFuse_cnt > FAULT_RESTORE_CNT)
+			{
+				g_sGun_data[GUN_A].bFuse_io_status = FALSE;
+				g_sFault_restore_Cnt.ucGUNAFuse_cnt = 0;
+				g_sFault_tirgger_cnt.ucGUNAFuse_cnt = 0;
+
+				GunAlarmReset(&g_sGun_fault[GUN_A].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_BLOWN_FUSE);
+				my_printf(USER_INFO, "GUN_A restore blown fuse fault\n");
+			}
+		}
+	}
+
+	if ((U32)TRUE == GET_FU2_FB_STATUS())
+	{
+		if (g_sGun_fault[GUN_B].sGeneral_fault.sItem.blown_fuse != (U8)TRUE)
+		{
+			//滤波
+			g_sFault_tirgger_cnt.ucGUNBFuse_cnt++;
+			if (g_sFault_tirgger_cnt.ucGUNBFuse_cnt > COMM_FAULT_TRIGGER_CNT)
+			{
+				g_sGun_data[GUN_B].bFuse_io_status = TRUE;
+				GunAlarmSet(&g_sGun_fault[GUN_B].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_BLOWN_FUSE);
+				my_printf(USER_ERROR, "%s:%d GUN_B blown fuse fault\n", __FILE__, __LINE__);
+			}
+		}
+		//恢复复位计数
+		g_sFault_restore_Cnt.ucGUNBFuse_cnt = 0;
+	}
+	else//恢复
+	{
+		if (g_sGun_fault[GUN_B].sGeneral_fault.sItem.blown_fuse != (U8)FALSE)
+		{
+			g_sFault_restore_Cnt.ucGUNBFuse_cnt++;
+			if (g_sFault_restore_Cnt.ucGUNBFuse_cnt > FAULT_RESTORE_CNT)
+			{
+				g_sGun_data[GUN_B].bFuse_io_status = FALSE;
+				g_sFault_restore_Cnt.ucGUNBFuse_cnt = 0;
+				g_sFault_tirgger_cnt.ucGUNBFuse_cnt = 0;
+
+				GunAlarmReset(&g_sGun_fault[GUN_B].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_BLOWN_FUSE);
+				my_printf(USER_INFO, "GUN_B restore blown fuse fault\n");
+			}
+		}
+	}
+}
+
+/**
+ * @brief: 正极枪温检测函数
+ * @param: ucGun_id:枪id
+ * @return
+ */
+static void PositiveTempCheck(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	S16 nWarn_temp = (S16)g_sStorage_data.sPublic_data[ucGun_id].unGun_warn_temp;
+	S16 nFault_temp = (S16)g_sStorage_data.sPublic_data[ucGun_id].unGun_fault_temp;
+	S16 nPositive_temp = g_sGun_data[ucGun_id].nDC_positive_temp;
+
+	//正极枪温异常
+	if ((nWarn_temp < nPositive_temp) && (nPositive_temp < nFault_temp))
+	{
+		if (g_sGun_warn[ucGun_id].sRecoverable_warn.sItem.positive_gun_over_tmp != (U8)TRUE)
+		{
+			//滤波
+			g_sFault_tirgger_cnt.sTemp_warn.ucPositive_cnt[ucGun_id]++;
+			if (g_sFault_tirgger_cnt.sTemp_warn.ucPositive_cnt[ucGun_id] > COMM_FAULT_TRIGGER_CNT)
+			{
+				GunAlarmSet(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_POSITIVE_GUN_OVER_TMP);
+				my_printf(USER_ERROR, "%s:%d %s positive temperature warning = %d\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B",
+						nPositive_temp);
+			}
+		}
+	}
+	else
+	{
+		//小于告警设定温度10度后恢复
+		if (nPositive_temp < (nWarn_temp - TEMP_FAULT_HYSTERESIS))
+		{
+			if (g_sGun_warn[ucGun_id].sRecoverable_warn.sItem.positive_gun_over_tmp != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sTemp_warn.ucPositive_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sTemp_warn.ucPositive_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					// 恢复成功：清恢复计数和触发计数，防止下次快速进入告警
+					g_sFault_restore_Cnt.sTemp_warn.ucPositive_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sTemp_warn.ucPositive_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_POSITIVE_GUN_OVER_TMP);
+					my_printf(USER_INFO, "%s restore positive temperature warning\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+		else
+		{
+			//只有检测到连续的恢复温度才进入恢复
+			g_sFault_restore_Cnt.sTemp_warn.ucPositive_cnt[ucGun_id] = 0;
+		}
+	}
+	//正极枪温故障
+	if (nPositive_temp >= nFault_temp)
+	{
+		if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.positive_gun_over_tmp != (U8)TRUE)
+		{
+			//滤波
+			g_sFault_tirgger_cnt.sTemp_fault.ucPositive_cnt[ucGun_id]++;
+			if (g_sFault_tirgger_cnt.sTemp_fault.ucPositive_cnt[ucGun_id] > COMM_FAULT_TRIGGER_CNT)
+			{
+				if (TRUE == CheckChargingStatus(ucGun_id))
+				{
+					//填充CST
+					g_sGB_Charger_data[ucGun_id].sCST.sFault_reason.sItem.unOver_temp = TRUE;
+				}
+				GunAlarmSet(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_POSITIVE_GUN_OVER_TMP);
+				GunAlarmReset(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_POSITIVE_GUN_OVER_TMP);
+				my_printf(USER_ERROR, "%s:%d %s positive temperature fault = %d\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B",
+						nPositive_temp);
+			}
+		}
+	}
+	else
+	{
+		//小于故障设定温度10度后恢复
+		if (nPositive_temp < (nFault_temp - TEMP_FAULT_HYSTERESIS))
+		{
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.positive_gun_over_tmp != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sTemp_fault.ucPositive_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sTemp_fault.ucPositive_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					// 恢复成功：清恢复计数和触发计数，防止下次快速进入告警
+					g_sFault_restore_Cnt.sTemp_fault.ucPositive_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sTemp_fault.ucPositive_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_POSITIVE_GUN_OVER_TMP);
+					my_printf(USER_INFO, "%s restore positive temperature fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+		else
+		{
+			//只有检测到连续的恢复温度才进入恢复
+			g_sFault_restore_Cnt.sTemp_fault.ucPositive_cnt[ucGun_id] = 0;
+		}
+	}
+}
+
+/**
+ * @brief: 负极枪温检测函数
+ * @param: ucGun_id:枪id
+ * @return
+ */
+static void NegativeTempCheck(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	S16 nWarn_temp = (S16)g_sStorage_data.sPublic_data[ucGun_id].unGun_warn_temp;
+	S16 nFault_temp = (S16)g_sStorage_data.sPublic_data[ucGun_id].unGun_fault_temp;
+	S16 nNegative_temp = g_sGun_data[ucGun_id].nDC_negative_temp;
+
+	//负极枪温异常
+	if ((nWarn_temp < nNegative_temp) && (nNegative_temp < nFault_temp))
+	{
+		if (g_sGun_warn[ucGun_id].sRecoverable_warn.sItem.negative_gun_over_tmp != (U8)TRUE)
+		{
+			//滤波
+			g_sFault_tirgger_cnt.sTemp_warn.ucNegative_cnt[ucGun_id]++;
+			if (g_sFault_tirgger_cnt.sTemp_warn.ucNegative_cnt[ucGun_id] > COMM_FAULT_TRIGGER_CNT)
+			{
+				GunAlarmSet(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_NEGATIVE_GUN_OVER_TMP);
+				my_printf(USER_ERROR, "%s:%d %s negative temperature warning = %d\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B",
+						nNegative_temp);
+			}
+		}
+	}
+	else//恢复
+	{
+		//小于告警设定温度10度后恢复
+		if (nNegative_temp < (nWarn_temp - TEMP_FAULT_HYSTERESIS))
+		{
+			if (g_sGun_warn[ucGun_id].sRecoverable_warn.sItem.negative_gun_over_tmp != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sTemp_warn.ucNegative_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sTemp_warn.ucNegative_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					// 恢复成功：清恢复计数和触发计数，防止下次快速进入告警
+					g_sFault_restore_Cnt.sTemp_warn.ucNegative_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sTemp_warn.ucNegative_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_NEGATIVE_GUN_OVER_TMP);
+					my_printf(USER_INFO, "%s restore negative temperature warning\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+		else
+		{
+			//只有检测到连续的恢复温度才进入恢复
+			g_sFault_restore_Cnt.sTemp_warn.ucNegative_cnt[ucGun_id] = 0;
+		}
+	}
+	//负极枪温故障
+	if (nNegative_temp >= nFault_temp)
+	{
+		if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.negative_gun_over_tmp != (U8)TRUE)
+		{
+			//滤波
+			g_sFault_tirgger_cnt.sTemp_fault.ucNegative_cnt[ucGun_id]++;
+			if (g_sFault_tirgger_cnt.sTemp_fault.ucNegative_cnt[ucGun_id] > COMM_FAULT_TRIGGER_CNT)
+			{
+				if (TRUE == CheckChargingStatus(ucGun_id))
+				{
+					//填充CST
+					g_sGB_Charger_data[ucGun_id].sCST.sFault_reason.sItem.unOver_temp = TRUE;
+				}
+				GunAlarmSet(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_NEGATIVE_GUN_OVER_TMP);
+				GunAlarmReset(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_NEGATIVE_GUN_OVER_TMP);
+				my_printf(USER_ERROR, "%s:%d %s negative temperature fault = %d\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B",
+						nNegative_temp);
+			}
+		}
+	}
+	else//恢复
+	{
+		//小于故障设定温度10度后恢复
+		if (nNegative_temp < (nFault_temp - TEMP_FAULT_HYSTERESIS))
+		{
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.negative_gun_over_tmp != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sTemp_fault.ucNegative_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sTemp_fault.ucNegative_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					// 恢复成功：清恢复计数和触发计数，防止下次快速进入告警
+					g_sFault_restore_Cnt.sTemp_fault.ucNegative_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sTemp_fault.ucNegative_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_NEGATIVE_GUN_OVER_TMP);
+					my_printf(USER_INFO, "%s restore negative temperature fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+		else
+		{
+			//只有检测到连续的恢复温度才进入恢复
+			g_sFault_restore_Cnt.sTemp_fault.ucNegative_cnt[ucGun_id] = 0;
+		}
+	}
+}
+
+/**
+ * @brief: 正负极温差检测函数
+ * @param: ucGun_id:枪id
+ * @return
+ */
+static void GunTempDiffCheck(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	S16 sDiff = g_sGun_data[ucGun_id].nDC_positive_temp - g_sGun_data[ucGun_id].nDC_negative_temp;
+	U16 unAbs_diff = (U16)((sDiff < 0) ? -sDiff : sDiff);
+	//枪温正负极温差过大
+	if (unAbs_diff > g_sStorage_data.sPublic_data[ucGun_id].unGun_diff_temp)
+	{
+		if (g_sGun_warn[ucGun_id].sRecoverable_warn.sItem.gun_tmp_diff != (U8)TRUE)
+		{
+			//滤波
+			g_sFault_tirgger_cnt.ucTemp_diff_cnt[ucGun_id]++;
+			if (g_sFault_tirgger_cnt.ucTemp_diff_cnt[ucGun_id] > COMM_FAULT_TRIGGER_CNT)
+			{
+				GunAlarmSet(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_GUN_TMP_DIFF);
+				my_printf(USER_ERROR, "%s:%d %s gun temperature diff warning = %d\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B",
+						unAbs_diff);
+			}
+		}
+	}
+	else//恢复
+	{
+		//小于温差设定温度5度后恢复
+		if (unAbs_diff < (g_sStorage_data.sPublic_data[ucGun_id].unGun_diff_temp - TEMP_DIFF_HYSTERESIS))
+		{
+			if (g_sGun_warn[ucGun_id].sRecoverable_warn.sItem.gun_tmp_diff != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.ucTemp_diff_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.ucTemp_diff_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					// 恢复成功：清恢复计数和触发计数，防止下次快速进入告警
+					g_sFault_restore_Cnt.ucTemp_diff_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.ucTemp_diff_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_warn[ucGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, WARNING_GUN_TMP_DIFF);
+					my_printf(USER_INFO, "%s restore gun temperature diff warning\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+		else
+		{
+			g_sFault_restore_Cnt.ucTemp_diff_cnt[ucGun_id] = 0;
+		}
+	}
+}
+
+/**
+ * @brief: 枪温检测函数
+ * @param:
+ * @return
+ */
+static void RunGunTempCheck(void)
+{
+	PositiveTempCheck(GUN_A);
+	PositiveTempCheck(GUN_B);
+	NegativeTempCheck(GUN_A);
+	NegativeTempCheck(GUN_B);
+	GunTempDiffCheck(GUN_A);
+	GunTempDiffCheck(GUN_B);
+}
+
+/**
+ * @brief: 负极继电器检测函数
+ * @param: ucGun_id 枪id
+ * @return
+ */
+static void GunNegativeRelay(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	U32 uiFlag = 0;
+
+	if (ucGun_id == GUN_A)
+	{
+		uiFlag = GET_NEGATIVE_RELAY_A_FB_STATUS();
+	}
+	else
+	{
+		uiFlag = GET_NEGATIVE_RELAY_B_FB_STATUS();
+	}
+
+	//继电器反馈：断开
+	if ((U32)TRUE == uiFlag)
+	{
+		g_sGun_data[ucGun_id].bNegative_relay_feedback_status = FALSE;
+		//继电器控制状态：闭合
+		if (TRUE == g_sGun_data[ucGun_id].bNegative_relay_status)
+		{
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.negative_relay_close != (U8)TRUE)
+			{
+				//滤波
+				g_sFault_tirgger_cnt.sRelay_close.ucNegative_cnt[ucGun_id]++;
+				if (g_sFault_tirgger_cnt.sRelay_close.ucNegative_cnt[ucGun_id] > SPECIAL_FAULT_TRIGGER_CNT)
+				{
+					GunAlarmSet(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_NEGATIVE_RELAY_CLOSE);
+					my_printf(USER_ERROR, "%s:%d %s negative relay close fault\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+#ifdef RELAY_RESTORE_CONTROL
+			// 清0恢复计数：避免故障未恢复时错误累加
+			g_sFault_restore_Cnt.sRelay_close.ucNegative_cnt[ucGun_id] = 0;
+#endif
+		}
+#ifndef RELAY_RESTORE_CONTROL
+		else
+		{
+			//防止启动一次充电++一次，多次充电后直接cnt达到一定值报故障
+			g_sFault_tirgger_cnt.sRelay_close.ucNegative_cnt[ucGun_id] = 0;
+		}
+#else
+		else
+		{
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.negative_relay_close != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sRelay_close.ucNegative_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sRelay_close.ucNegative_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					g_sFault_restore_Cnt.sRelay_close.ucNegative_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sRelay_close.ucNegative_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_NEGATIVE_RELAY_CLOSE);
+					my_printf(USER_INFO, "%s restore negative relay close fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+#endif
+	}
+	else //继电器反馈：闭合
+	{
+		g_sGun_data[ucGun_id].bNegative_relay_feedback_status = TRUE;
+		//继电器控制状态：断开
+		if (FALSE == g_sGun_data[ucGun_id].bNegative_relay_status)
+		{
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.negative_relay_sticking != (U8)TRUE)
+			{
+				//滤波
+				g_sFault_tirgger_cnt.sRelay_stick.ucNegative_cnt[ucGun_id]++;
+				if (g_sFault_tirgger_cnt.sRelay_stick.ucNegative_cnt[ucGun_id] > SPECIAL_FAULT_TRIGGER_CNT)
+				{
+					GunAlarmSet(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_NEGATIVE_RELAY_STICKING);
+					my_printf(USER_ERROR, "%s:%d %s negative relay sticking fault\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+#ifdef RELAY_RESTORE_CONTROL
+			// 清0恢复计数：避免故障未恢复时错误累加
+			g_sFault_restore_Cnt.sRelay_stick.ucNegative_cnt[ucGun_id] = 0;
+#endif
+		}
+#ifndef RELAY_RESTORE_CONTROL
+		else
+		{
+			//防止启动一次充电++一次，多次充电后直接cnt达到一定值报故障
+			g_sFault_tirgger_cnt.sRelay_stick.ucNegative_cnt[ucGun_id] = 0;
+		}
+#else
+		else//继电器控制状态：闭合
+		{
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.negative_relay_sticking != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sRelay_stick.ucNegative_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sRelay_stick.ucNegative_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					g_sFault_restore_Cnt.sRelay_stick.ucNegative_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sRelay_stick.ucNegative_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_NEGATIVE_RELAY_STICKING);
+					my_printf(USER_INFO, "%s restore negative relay sticking fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+#endif
+	}
+}
+
+/**
+ * @brief: 正极继电器检测函数
+ * @param: ucGun_id 枪id
+ * @return
+ */
+static void GunPositiveRelay(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	U32 uiFlag = 0;
+
+	if (ucGun_id == GUN_A)
+	{
+		uiFlag = GET_POSITIVE_RELAY_A_FB_STATUS();
+	}
+	else
+	{
+		uiFlag = GET_POSITIVE_RELAY_B_FB_STATUS();
+	}
+
+	//继电器反馈：断开
+	if ((U32)TRUE == uiFlag)
+	{
+		g_sGun_data[ucGun_id].bPositive_relay_feedback_status = FALSE;
+		//继电器控制状态：闭合
+		if (TRUE == g_sGun_data[ucGun_id].bPositive_relay_status)
+		{
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.positive_relay_close != (U8)TRUE)
+			{
+				//滤波
+				g_sFault_tirgger_cnt.sRelay_close.ucPositive_cnt[ucGun_id]++;
+				if (g_sFault_tirgger_cnt.sRelay_close.ucPositive_cnt[ucGun_id] > SPECIAL_FAULT_TRIGGER_CNT)
+				{
+					GunAlarmSet(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_POSITIVE_RELAY_CLOSE);
+					my_printf(USER_ERROR, "%s:%d %s positive relay close fault\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+#ifdef RELAY_RESTORE_CONTROL
+			// 清0恢复计数：避免故障未恢复时错误累加
+			g_sFault_restore_Cnt.sRelay_close.ucPositive_cnt[ucGun_id] = 0;
+#endif
+		}
+#ifndef RELAY_RESTORE_CONTROL
+		else
+		{
+			//防止启动一次充电++一次，多次充电后直接cnt达到一定值报故障
+			g_sFault_tirgger_cnt.sRelay_close.ucPositive_cnt[ucGun_id] = 0;
+		}
+#else
+		else
+		{
+			//恢复
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.positive_relay_close != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sRelay_close.ucPositive_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sRelay_close.ucPositive_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					g_sFault_restore_Cnt.sRelay_close.ucPositive_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sRelay_close.ucPositive_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_POSITIVE_RELAY_CLOSE);
+					my_printf(USER_INFO, "%s restore positive relay close fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+#endif
+	}
+	else //继电器反馈：闭合
+	{
+		g_sGun_data[ucGun_id].bPositive_relay_feedback_status = TRUE;
+		//继电器控制状态：断开
+		if (FALSE == g_sGun_data[ucGun_id].bPositive_relay_status)
+		{
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.positive_relay_sticking != (U8)TRUE)
+			{
+				//滤波
+				g_sFault_tirgger_cnt.sRelay_stick.ucPositive_cnt[ucGun_id]++;
+				if (g_sFault_tirgger_cnt.sRelay_stick.ucPositive_cnt[ucGun_id] > SPECIAL_FAULT_TRIGGER_CNT)
+				{
+					GunAlarmSet(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_POSITIVE_RELAY_STICKING);
+					my_printf(USER_ERROR, "%s:%d %s positive relay sticking fault\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+#ifdef RELAY_RESTORE_CONTROL
+			// 清0恢复计数：避免故障未恢复时错误累加
+			g_sFault_restore_Cnt.sRelay_stick.ucPositive_cnt[ucGun_id] = 0;
+#endif
+		}
+#ifndef RELAY_RESTORE_CONTROL
+		else
+		{
+			//防止启动一次充电++一次，多次充电后直接cnt达到一定值报故障
+			g_sFault_tirgger_cnt.sRelay_stick.ucPositive_cnt[ucGun_id] = 0;
+		}
+#else
+		else//继电器控制状态：闭合
+		{
+			//恢复
+			if (g_sGun_fault[ucGun_id].sGeneral_fault.sItem.positive_relay_sticking != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sRelay_stick.ucPositive_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sRelay_stick.ucPositive_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					g_sFault_restore_Cnt.sRelay_stick.ucPositive_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sRelay_stick.ucPositive_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, FAULT_POSITIVE_RELAY_STICKING);
+					my_printf(USER_INFO, "%s restore positive relay sticking fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+#endif
+	}
+}
+
+/**
+ * @brief: 辅源继电器检测函数
+ * @param: ucGun_id:枪id
+ * @return
+ */
+static void Assist_Power_RelayCheck(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	BOOL bAssist_power_control_status = FALSE;
+
+	if (GUN_A == ucGun_id)
+	{
+		bAssist_power_control_status = (g_sCig_write_control.unControl_data >> 3U) & 0x01;
+	}
+	else
+	{
+		bAssist_power_control_status = (g_sCig_write_control.unControl_data >> 2U) & 0x01;
+	}
+
+	//反馈闭合
+	if (CIG_ASSIST_CLOSE == g_sGun_data[ucGun_id].ucBms_assist_power_feedback_status)
+	{
+		//断开
+		if (FALSE == bAssist_power_control_status)
+		{
+			if (g_sGun_fault[ucGun_id].sRecoverable_fault.sItem.unCig_assist_relay_sticking != (U8)TRUE)
+			{
+				//滤波
+				g_sFault_tirgger_cnt.sRelay_stick.ucAssist_power_cnt[ucGun_id]++;
+				if (g_sFault_tirgger_cnt.sRelay_stick.ucAssist_power_cnt[ucGun_id] > (COMM_FAULT_TRIGGER_CNT*4))//继电器控制在cig小板上，增加判定时间
+				{
+					GunAlarmSet(&g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, FAULT_CIG_ASSIST_RELAY_STICKING);
+					my_printf(USER_ERROR, "%s:%d %s Assist_power relay sticking fault\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+#ifdef RELAY_RESTORE_CONTROL
+			//清0恢复复位计数
+			g_sFault_restore_Cnt.sRelay_stick.ucAssist_power_cnt[ucGun_id] = 0;
+#endif
+		}
+#ifndef RELAY_RESTORE_CONTROL
+		else
+		{
+			//防止启动一次充电++一次，多次充电后直接cnt达到一定值报故障
+			g_sFault_tirgger_cnt.sRelay_stick.ucAssist_power_cnt[ucGun_id] = 0;
+		}
+#else
+		else//继电器控制状态：闭合
+		{
+			//恢复
+			if (g_sGun_fault[ucGun_id].sRecoverable_fault.sItem.unCig_assist_relay_sticking != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sRelay_stick.ucAssist_power_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sRelay_stick.ucAssist_power_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					g_sFault_restore_Cnt.sRelay_stick.ucAssist_power_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sRelay_stick.ucAssist_power_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, FAULT_CIG_ASSIST_RELAY_STICKING);
+					my_printf(USER_INFO, "%s restore Assist_power relay sticking fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+#endif
+	}
+	else//反馈断开
+	{
+		//闭合
+		if (TRUE == bAssist_power_control_status)
+		{
+			if (g_sGun_fault[ucGun_id].sRecoverable_fault.sItem.unCig_assist_relay_close != (U8)TRUE)
+			{
+				//滤波
+				g_sFault_tirgger_cnt.sRelay_close.ucAssist_power_cnt[ucGun_id]++;
+				if (g_sFault_tirgger_cnt.sRelay_close.ucAssist_power_cnt[ucGun_id] > (COMM_FAULT_TRIGGER_CNT*4))//继电器控制在cig小板上，增加判定时间
+				{
+					GunAlarmSet(&g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, FAULT_CIG_ASSIST_RELAY_CLOSE);
+					my_printf(USER_ERROR, "%s:%d %s Assist_power relay close fault\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+#ifdef RELAY_RESTORE_CONTROL
+			//清0恢复复位计数
+			g_sFault_restore_Cnt.sRelay_close.ucAssist_power_cnt[ucGun_id] = 0;
+#endif
+		}
+#ifndef RELAY_RESTORE_CONTROL
+		else
+		{
+			//防止启动一次充电++一次，多次充电后直接cnt达到一定值报故障
+			g_sFault_tirgger_cnt.sRelay_close.ucAssist_power_cnt[ucGun_id] = 0;
+		}
+#else
+		else//继电器控制状态：闭合
+		{
+			//恢复
+			if (g_sGun_fault[ucGun_id].sRecoverable_fault.sItem.unCig_assist_relay_close != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sRelay_close.ucAssist_power_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sRelay_close.ucAssist_power_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					g_sFault_restore_Cnt.sRelay_close.ucAssist_power_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sRelay_close.ucAssist_power_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, FAULT_CIG_ASSIST_RELAY_CLOSE);
+					my_printf(USER_INFO, "%s restore Assist_power relay close fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+#endif
+	}
+}
+
+/**
+ * @brief: 枪锁继电器检测函数
+ * @param: ucGun_id:枪id
+ * @return
+ */
+static void Gun_Lock_RelayCheck(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	BOOL bGun_lock_control_status = FALSE;
+
+	if (GUN_A == ucGun_id)
+	{
+		bGun_lock_control_status = (g_sCig_write_control.unControl_data >> 1U) & 0x01;
+	}
+	else
+	{
+		bGun_lock_control_status = g_sCig_write_control.unControl_data & 0x01;
+	}
+
+	//反馈闭合
+	if (CIG_LOCK_RELAY_CLOSE == g_sGun_data[ucGun_id].ucGun_lock_relay_feedback_status)
+	{
+		//断开（控制状态异常，可能存在粘连故障）
+		if (FALSE == bGun_lock_control_status)
+		{
+			if (g_sGun_fault[ucGun_id].sRecoverable_fault.sItem.unCig_gun_relay_sticking != (U8)TRUE)
+			{
+				//累加故障触发计数，实现滤波
+				g_sFault_tirgger_cnt.sRelay_stick.ucGun_relay_cnt[ucGun_id]++;
+				if (g_sFault_tirgger_cnt.sRelay_stick.ucGun_relay_cnt[ucGun_id] > (COMM_FAULT_TRIGGER_CNT*3))//继电器控制在cig小板上，增加判定时间
+				{
+					GunAlarmSet(&g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, FAULT_CIG_GUN_RELAY_STICKING);
+					my_printf(USER_ERROR, "%s:%d %s lock relay sticking fault\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+#ifdef RELAY_RESTORE_CONTROL
+			//故障未恢复时，清0恢复计数（避免错误累加）
+			g_sFault_restore_Cnt.sRelay_stick.ucGun_relay_cnt[ucGun_id] = 0;
+#endif
+		}
+#ifndef RELAY_RESTORE_CONTROL
+		else
+		{
+			//非自恢复模式：控制状态正常，清0触发计数（避免误报）
+			g_sFault_tirgger_cnt.sRelay_stick.ucGun_relay_cnt[ucGun_id] = 0;
+		}
+#else
+		else//控制状态正常，累加恢复计数
+		{
+			if (g_sGun_fault[ucGun_id].sRecoverable_fault.sItem.unCig_gun_relay_sticking != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sRelay_stick.ucGun_relay_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sRelay_stick.ucGun_relay_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					//恢复计数达标，复位故障
+					g_sFault_restore_Cnt.sRelay_stick.ucGun_relay_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sRelay_stick.ucGun_relay_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, FAULT_CIG_GUN_RELAY_STICKING);
+					my_printf(USER_INFO, "%s restore lock relay sticking fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+#endif
+	}
+	else//反馈断开
+	{
+		//闭合（控制状态异常，可能存在闭合故障）
+		if (TRUE == bGun_lock_control_status)
+		{
+			if (g_sGun_fault[ucGun_id].sRecoverable_fault.sItem.unCig_gun_relay_close != (U8)TRUE)
+			{
+				//累加故障触发计数，实现滤波
+				g_sFault_tirgger_cnt.sRelay_close.ucGun_relay_cnt[ucGun_id]++;
+				if (g_sFault_tirgger_cnt.sRelay_close.ucGun_relay_cnt[ucGun_id] > (COMM_FAULT_TRIGGER_CNT*3))//继电器控制在cig小板上，增加判定时间
+				{
+					GunAlarmSet(&g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, FAULT_CIG_GUN_RELAY_CLOSE);
+					my_printf(USER_ERROR, "%s:%d %s lock relay close fault\n", __FILE__, __LINE__, (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+
+#ifdef RELAY_RESTORE_CONTROL
+			//故障未恢复时，清0恢复计数（避免错误累加）
+			g_sFault_restore_Cnt.sRelay_close.ucGun_relay_cnt[ucGun_id] = 0;
+#endif
+		}
+#ifndef RELAY_RESTORE_CONTROL
+		else
+		{
+			//非自恢复模式：控制状态正常，清0触发计数（避免误报）
+			g_sFault_tirgger_cnt.sRelay_close.ucGun_relay_cnt[ucGun_id] = 0;
+		}
+#else
+		else//控制状态正常（断开），累加恢复计数
+		{
+			if (g_sGun_fault[ucGun_id].sRecoverable_fault.sItem.unCig_gun_relay_close != (U8)FALSE)
+			{
+				g_sFault_restore_Cnt.sRelay_close.ucGun_relay_cnt[ucGun_id]++;
+				if (g_sFault_restore_Cnt.sRelay_close.ucGun_relay_cnt[ucGun_id] > FAULT_RESTORE_CNT)
+				{
+					//恢复计数达标，复位故障
+					g_sFault_restore_Cnt.sRelay_close.ucGun_relay_cnt[ucGun_id] = 0;
+					g_sFault_tirgger_cnt.sRelay_close.ucGun_relay_cnt[ucGun_id] = 0;
+
+					GunAlarmReset(&g_sGun_fault[ucGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, FAULT_CIG_GUN_RELAY_CLOSE);
+					my_printf(USER_INFO, "%s restore lock relay close fault\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+				}
+			}
+		}
+#endif
+	}
+}
+
+/**
+ * @brief: 辅源/枪锁(CIG小板)继电器检测
+ * @param:
+ * @return
+ */
+static void RunCigRelayCheck(void)
+{
+	S32 iTmp_flag = 0;
+	(void)GetSigVal(ALARM_ID_CIG_COMM_LOST_ERROR, &iTmp_flag);
+
+	if (iTmp_flag != COMM_LOST)
+	{
+		if (g_sStorage_data.sPublic_data[GUN_A].ucGun_type == GB)
+		{
+			Gun_Lock_RelayCheck(GUN_A);
+			Assist_Power_RelayCheck(GUN_A);
+		}
+		if (g_sStorage_data.sPublic_data[GUN_B].ucGun_type == GB)
+		{
+			Gun_Lock_RelayCheck(GUN_B);
+			Assist_Power_RelayCheck(GUN_B);
+		}
+	}
+}
+
+/**
+ * @brief: 高压继电器检测函数
+ * @param:
+ * @return
+ */
+static void RunHighVolRelayCheck(void)
+{
+	GunNegativeRelay(GUN_A);
+	GunNegativeRelay(GUN_B);
+	GunPositiveRelay(GUN_A);
+	GunPositiveRelay(GUN_B);
+}
+
+static void Emergency_Fault_Check_Task(void * pvParameters)
+{
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+	volatile UBaseType_t uxHighWaterMark;
+#endif
+
+	while (1)
+	{
+		//急停检测
+		//RunEmergencyScram();
+		//门禁检测
+		//RunEmergencyDoorGuard();
+		//水浸检测
+		//RunWaterImmersionCheck();
+		//撞击检测
+		//RunHitTestCheck();
+		//塑壳检测
+		//RunMCBTestCheck();
+		if ((g_sStorage_data.sPublic_data[GUN_A].ucGun_type == GB) || (g_sStorage_data.sPublic_data[GUN_B].ucGun_type == GB))
+		{
+			//辅源/枪锁(CIG小板)继电器检测
+			RunCigRelayCheck();
+		}
+		//高压继电器检测
+		RunHighVolRelayCheck();
+		//防雷检测
+		RunSPDCheck();
+		//枪温检测
+		RunGunTempCheck();
+		//熔断器检测
+		RunFuseIOCheck();
+		//回枪检测
+		RunEmergencyGunReturnCheck();
+
+		vTaskDelay(TASK_DELAY_PERIOD);
+
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+		uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+#endif
+	}
+}
+
+static void Scram_Check_Task(void * pvParameters)
+{
+	while (1)
+	{
+		//急停检测
+		RunEmergencyScram();
+#ifndef TEST_MODE
+		vTaskDelay(TASK_DELAY_PERIOD);
+#else
+		vTaskDelay(10);
+#endif
+	}
+}
+
+void Emergency_Fault_Init_Task(void * pvParameters)
+{
+	CheckServerConfig();
+
+	g_sAlarm_mutex = xSemaphoreCreateMutex();
+
+    if (NULL == g_sAlarm_mutex)
+    {
+    	my_printf(USER_ERROR, "%s:%d Emergency_Fault_Init_Task mutex create failed\n", __FILE__, __LINE__);
+    	vTaskDelete(NULL);
+    }
+
+	taskENTER_CRITICAL();
+
+	//add other fault task here
+    (void)xTaskCreate(&Emergency_Fault_Check_Task, "EMERGENCY_FAULT_CHECK", 800U/4U, NULL, GENERAL_TASK_PRIO, NULL);
+
+    (void)xTaskCreate(&Scram_Check_Task, "SCRAM_CHECK", 600U/4U, NULL, GENERAL_TASK_PRIO, NULL);
+
+	vTaskDelete(NULL);
+
+	taskEXIT_CRITICAL();
+}

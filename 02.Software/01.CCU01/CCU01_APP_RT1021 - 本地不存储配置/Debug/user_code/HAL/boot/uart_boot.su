@@ -1,0 +1,6 @@
+../user_code/HAL/boot/uart_boot.c:35:6:blDetcetUsartUpdataStep	24	static
+../user_code/HAL/boot/uart_boot.c:94:6:UsartUpdataTimeOutFunc	8	static
+../user_code/HAL/boot/uart_boot.c:113:13:BOOT_ENTER_REPLY	528	static
+../user_code/HAL/boot/uart_boot.c:165:13:BOOT_DISENTER_REPLY	528	static
+../user_code/HAL/boot/uart_boot.c:211:13:BOOT_UPDATE_ACK	536	static
+../user_code/HAL/boot/uart_boot.c:256:6:UsartUpdataFunc	24	static

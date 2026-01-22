@@ -1,0 +1,9 @@
+../user_code/APP/rfid/rfid.c:31:13:RfidModuleSelect	16	static
+../user_code/APP/rfid/rfid.c:55:13:RfidStartCharge	24	static
+../user_code/APP/rfid/rfid.c:90:13:RfidStopCharge	24	static
+../user_code/APP/rfid/rfid.c:120:13:RfidDataProcess	16	static
+../user_code/APP/rfid/rfid.c:162:13:Rfid_Parse_Task	24	static
+../user_code/APP/rfid/rfid.c:194:13:RfidTimeoutCallback	32	static
+../user_code/APP/rfid/rfid.c:219:13:RfidComCheck	16	static
+../user_code/APP/rfid/rfid.c:245:13:Rfid_Request_Task	40	static
+../user_code/APP/rfid/rfid.c:306:6:Rfid_Init_Task	24	static

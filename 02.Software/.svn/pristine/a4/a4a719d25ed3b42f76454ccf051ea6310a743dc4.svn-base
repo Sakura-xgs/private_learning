@@ -1,0 +1,202 @@
+﻿#ifndef  _SIGNAL_H_
+#define  _SIGNAL_H_
+
+
+//---------------------------------------------------------------------------------------------//
+//------------------------------------------寄存器表（参数）-------------------------------------------//
+//---------------------------------------------------------------------------------------------//
+#define CCU_SET_SIG_ID_BEGIN_FLAG                        	(1000)	//设置信号开始位置
+#define CCU_SET_SIG_ID_RESET_EVENT_FLASH_FG              	(1001)	//初始化FLASH记录数据参数标志
+#define CCU_SET_SIG_ID_FLASH_HIS_WR_ADDR                 	(1002)	//FLASH历史数据当前存储地址
+#define CCU_SET_SIG_ID_FLASH_ERR_WR_ADDR                 	(1003)	//FLASH告警数据当前存储地址
+#define CCU_SET_SIG_ID_FLASH_HIS_RD_ADDR                 	(1004)	//FLASH历史数据读取开始地址
+#define CCU_SET_SIG_ID_FLASH_ERR_RD_ADDR                 	(1005)	//FLASH告警数据读取开始地址
+#define CCU_SET_SIG_ID_FLASH_HIS_SAVE_FULL_FLAG          	(1006)	//FLASH历史数据存满标识
+#define CCU_SET_SIG_ID_FLASH_ERR_SAVE_FULL_FLAG          	(1007)	//FLASH告警数据存满标识
+#define CCU_SET_SIG_ID_FLASH_HIS_DATA_RECORD_NUM         	(1008)	//FLASH历史数据记录条数
+#define CCU_SET_SIG_ID_FLASH_ERR_DATA_RECORD_NUM         	(1009)	//FLASH告警数据记录条数
+#define CCU_SET_SIG_ID_LIGHT_ON_TIME                     	(1010)	//照明灯开始时间
+#define CCU_SET_SIG_ID_LIGHT_OFF_TIME                    	(1011)	//照明灯关闭时间
+#define CCU_SET_SIG_ID_RESET_TIMES                       	(1012)	//复位次数
+#define CCU_SET_SIG_ID_STARTUP_DAY                       	(1013)	//上次开机日期(空、年、月、日)
+#define CCU_SET_SIG_ID_STARTUP_SEC                       	(1014)	//上次开机时刻(空、时、分、秒)
+#define CCU_SET_SIG_ID_HIGH_FREQ_END_FLAG                	(1015)	//高频设置信号结束位置
+#define CCU_SET_SIG_ID_PILE_STORAGE_BRGIN_FLAG           	(1016)	//桩存储数据信号起始位置
+#define CCU_SET_SIG_ID_SOFTWARE_1_2_3_4                  	(1017)	//充电桩软件版本(1、2、3、4位)
+#define CCU_SET_SIG_ID_SOFTWARE_5_6_7_8                  	(1018)	//充电桩软件版本(5、6、7、8位)
+#define CCU_SET_SIG_ID_SOFTWARE_9_10_11_12               	(1019)	//充电桩软件版本(9、10、11、12位)
+#define CCU_SET_SIG_ID_SOFTWARE_13_14_15_16              	(1020)	//充电桩软件版本(13、14、15、16位)
+#define CCU_SET_SIG_ID_HARDWARE_1_2_3_4                  	(1021)	//充电桩硬件版本(1、2、3、4位)
+#define CCU_SET_SIG_ID_HARDWARE_5_6_7_8                  	(1022)	//充电桩硬件版本(5、6、7、8位)
+#define CCU_SET_SIG_ID_HARDWARE_9_10_11_12               	(1023)	//充电桩硬件版本(9、10、11、12位)
+#define CCU_SET_SIG_ID_HARDWARE_13_14_15_16              	(1024)	//充电桩硬件版本(13、14、15、16位)
+#define CCU_SET_SIG_ID_SN_NUMBER_1_2_3_4                 	(1025)	//产品SN(1、2、3、4位)
+#define CCU_SET_SIG_ID_SN_NUMBER_5_6_7_8                 	(1026)	//产品SN(5、6、7、8位)
+#define CCU_SET_SIG_ID_SN_NUMBER_9_10_11_12              	(1027)	//产品SN(9、10、11、12位)
+#define CCU_SET_SIG_ID_SN_NUMBER_13_14_15_16             	(1028)	//产品SN(13、14、15、16位)
+#define CCU_SET_SIG_ID_SN_NUMBER_17_18_19_20             	(1029)	//产品SN(17、18、19、20位)
+#define CCU_SET_SIG_ID_SN_NUMBER_21_22_23_24             	(1030)	//产品SN(21、22、23、24位)
+#define CCU_SET_SIG_ID_SN_NUMBER_25_26_27_28             	(1031)	//产品SN(25、26、27、28位)
+#define CCU_SET_SIG_ID_EXT_EEPROM_TEST_VAL               	(1032)	//外部eeprom功能测试信号
+#define CCU_SET_SIG_ID_FLAG                              	(1033)	//平台配置桩属性标志位
+#define CCU_SET_SIG_ID_TEST_STATION_RECORD               	(1034)	//测试工站信息记录
+#define CCU_SET_SIG_ID_CHARGE_ID_1_2_3_4                 	(1035)	//charge id（1-4位）
+#define CCU_SET_SIG_ID_CHARGE_ID_5_6_7_8                 	(1036)	//charge id（5-8位）
+#define CCU_SET_SIG_ID_CHARGE_ID_9_10_11_12              	(1037)	//charge id（9-12位）
+#define CCU_SET_SIG_ID_CHARGE_ID_13_14_15_16             	(1038)	//charge id（13-16位）
+#define CCU_SET_SIG_ID_CHARGE_ID_17_18_19_20             	(1039)	//charge id（16-20位）
+#define CCU_SET_SIG_ID_CHARGE_ID_21_22_23_24             	(1040)	//charge id（21-24位）
+#define CCU_SET_SIG_ID_CHARGE_ID_25_26_27_28             	(1041)	//charge id（25-28位）
+#define CCU_SET_SIG_ID_CHARGE_ID_29_30_31_32             	(1042)	//charge id（29-32位）
+#define CCU_SET_SIG_ID_ENABLE_LOCAL_BILL                 	(1043)	//是否开启本地计费
+#define CCU_SET_SIG_ID_GUN_NUM                           	(1044)	//桩编码
+#define CCU_SET_SIG_ID_USE_SCREEN_FLAG                   	(1045)	//是否使用广告屏
+#define CCU_SET_SIG_ID_HMI_MODEL                         	(1046)	//HMI型号
+#define CCU_SET_SIG_ID_USE_POS_FLAG                      	(1047)	//是否使用POS
+#define CCU_SET_SIG_ID_POS_MODEL                         	(1048)	//pos机型号
+#define CCU_SET_SIG_ID_USE_RFID_FLAG                     	(1049)	//是否使用RFID
+#define CCU_SET_SIG_ID_RFID_MODEL                        	(1050)	//刷卡板型号
+#define CCU_SET_SIG_ID_M1_KEY_MODE_FIRST                 	(1051)	//M1卡第一块数据存储密码模式
+#define CCU_SET_SIG_ID_M1_SECTOR_FIRST                   	(1052)	//M1卡第一块数据存储密码扇区
+#define CCU_SET_SIG_ID_M1_BLOCK_FIRST                    	(1053)	//M1卡第一块数据存储密码块号
+#define CCU_SET_SIG_ID_M1_PASSWORD_FIRST_1_2_3_4         	(1054)	//M1卡第一块数据存储密码秘钥1-4字节
+#define CCU_SET_SIG_ID_M1_PASSWORD_FIRST_5_6_7_8         	(1055)	//M1卡第一块数据存储密码秘钥4-8字节
+#define CCU_SET_SIG_ID_M1_PASSWORD_FIRST_9_10_11_12      	(1056)	//M1卡第一块数据存储密码秘钥9-12字节
+#define CCU_SET_SIG_ID_M1_KEY_MODE_SECOND                	(1057)	//M1卡第二块数据存储密码模式
+#define CCU_SET_SIG_ID_M1_SECTOR_SECOND                  	(1058)	//M1卡第二块数据存储密码模式
+#define CCU_SET_SIG_ID_M1_BLOCK_SECOND                   	(1059)	//M1卡第二块数据存储密码模式
+#define CCU_SET_SIG_ID_M1_PASSWORD_SECOND_1_2_3_4        	(1060)	//M1卡第二块数据存储密码秘钥1-4字节
+#define CCU_SET_SIG_ID_M1_PASSWORD_SECOND_5_6_7_8        	(1061)	//M1卡第二块数据存储密码秘钥4-8字节
+#define CCU_SET_SIG_ID_M1_PASSWORD_SECOND_9_10_11_12     	(1062)	//M1卡第二块数据存储密码秘钥9-12字节
+#define CCU_SET_SIG_ID_CC1_12V_MAX                       	(1063)	//CCS1 12V上限值
+#define CCU_SET_SIG_ID_CC1_12V_MIN                       	(1064)	//CCS1 12V下限值
+#define CCU_SET_SIG_ID_CC1_6V_MAX                        	(1065)	//CCS1 6V上限值
+#define CCU_SET_SIG_ID_CC1_6V_MIN                        	(1066)	//CCS1 6V下限值
+#define CCU_SET_SIG_ID_CC1_4V_MAX                        	(1067)	//CCS1 4V上限值
+#define CCU_SET_SIG_ID_CC1_4V_MIN                        	(1068)	//CCS1 4V下限值
+#define CCU_SET_SIG_ID_GUN_TYPE_A                        	(1069)	//A枪类型
+#define CCU_SET_SIG_ID_GUN_ID_A                          	(1070)	//A枪id
+#define CCU_SET_SIG_ID_GUN_MAX_OUTPUT_VOL_A              	(1071)	//枪最大输出电压
+#define CCU_SET_SIG_ID_GUN_MIN_OUTPUT_VOL_A              	(1072)	//枪最小输出电压
+#define CCU_SET_SIG_ID_GUN_MAX_OUTPUT_CUR_A              	(1073)	//枪最大输出电流
+#define CCU_SET_SIG_ID_GUN_MIN_OUTPUT_CUR_A              	(1074)	//枪最小输出电流
+#define CCU_SET_SIG_ID_METER_MODEL_A                     	(1075)	//电表型号
+#define CCU_SET_SIG_ID_SECC_MODEL_A                      	(1076)	//secc型号
+#define CCU_SET_SIG_ID_IMD_MODEL_A                       	(1077)	//imd型号
+#define CCU_SET_SIG_ID_WARN_TEMP_A                       	(1078)	//A枪告警枪温
+#define CCU_SET_SIG_ID_FAULT_TEMP_A                      	(1079)	//A枪故障枪温
+#define CCU_SET_SIG_ID_DIFF_TEMP_A                       	(1080)	//A枪枪温温差阈值
+#define CCU_SET_SIG_ID_GUN_TYPE_B                        	(1081)	//B枪类型
+#define CCU_SET_SIG_ID_GUN_ID_B                          	(1082)	//B枪id
+#define CCU_SET_SIG_ID_GUN_MAX_OUTPUT_VOL_B              	(1083)	//枪最大输出电压
+#define CCU_SET_SIG_ID_GUN_MIN_OUTPUT_VOL_B              	(1084)	//枪最小输出电压
+#define CCU_SET_SIG_ID_GUN_MAX_OUTPUT_CUR_B              	(1085)	//枪最大输出电流
+#define CCU_SET_SIG_ID_GUN_MIN_OUTPUT_CUR_B              	(1086)	//枪最小输出电流
+#define CCU_SET_SIG_ID_METER_MODEL_B                     	(1087)	//电表型号
+#define CCU_SET_SIG_ID_SECC_MODEL_B                      	(1088)	//secc型号
+#define CCU_SET_SIG_ID_IMD_MODEL_B                       	(1089)	//imd型号
+#define CCU_SET_SIG_ID_WARN_TEMP_B                       	(1090)	//B枪告警枪温
+#define CCU_SET_SIG_ID_FAULT_TEMP_B                      	(1091)	//B枪故障枪温
+#define CCU_SET_SIG_ID_DIFF_TEMP_B                       	(1092)	//B枪枪温温差阈值
+#define CCU_SET_SIG_ID_PILE_STORAGE_END_FLAG             	(1093)	//桩存储数据信号起始位置
+#define CCU_SET_SIG_ID_OCCUPATION_FEE_UNIT_PRICE         	(1094)	//占位费单价
+#define CCU_SET_SIG_ID_OCCUPATION_FEE_A                  	(1095)	//占位费
+#define CCU_SET_SIG_ID_OCCUPATION_FEE_B                  	(1096)	//占位费
+#define CCU_SET_SIG_ID_GRACE_PERIOD                      	(1097)	//宽限时间
+#define CCU_SET_SIG_ID_ADVANCE_CHARGE                    	(1098)	//预扣费金额
+#define CCU_SET_SIG_ID_CHARGE_PRICE_UNIT_PRICE           	(1099)	//充电单价
+#define CCU_SET_SIG_ID_CHARGE_PRICE_A                    	(1100)	//充电费用
+#define CCU_SET_SIG_ID_CHARGE_PRICE_B                    	(1101)	//充电费用
+#define CCU_SET_SIG_ID_PAYMENT_FLAG_A                    	(1102)	//A枪扣款标志位
+#define CCU_SET_SIG_ID_PAYMENT_FLAG_B                    	(1103)	//B枪扣款标志位
+#define CCU_SET_SIG_ID_END_FLAG                          	(1104)	//设置信号结束位置
+
+
+//---------------------------------------------------------------------------------------------//
+//------------------------------------------寄存器表（实时寄存器数据）-------------------------------------------//
+//---------------------------------------------------------------------------------------------//
+#define CCU_SAM_SIG_ID_BEGIN_FLAG                        	(2000)	//采集信号开始位置
+#define CCU_SAM_SIG_ID_BAT_RATE_VOLT                     	(2001)	//电池额定总电压
+#define CCU_SAM_SIG_ID_CHARGE_CUTOFF_VOLT                	(2002)	//充电截止总电压
+#define CCU_SAM_SIG_ID_UPDATE_STATE                      	(2003)	//升级状态
+#define CCU_SAM_SIG_ID_PCB_TEMP_1                        	(2004)	//CCU板温1
+#define CCU_SAM_SIG_ID_PCB_TEMP_2                        	(2005)	//CCU板温2
+#define CCU_SAM_SIG_ID_GNUA_POSITIVE                     	(2006)	//A枪正极枪温
+#define CCU_SAM_SIG_ID_GNUA_NEGATIVE                     	(2007)	//A枪负极枪温
+#define CCU_SAM_SIG_ID_GNUB_POSITIVE                     	(2008)	//B枪正极枪温
+#define CCU_SAM_SIG_ID_GNUB_NEGATIVE                     	(2009)	//B枪负极枪温
+#define CCU_SAM_SIG_ID_CHARGE_MAX_VOLT                   	(2010)	//充电桩电压上限
+#define CCU_SAM_SIG_ID_OCCUPATION_FEE_A                  	(2011)	//占位费
+#define CCU_SAM_SIG_ID_OCCUPATION_FEE_B                  	(2012)	//占位费
+#define CCU_SAM_SIG_ID_CHARGE_PRICE_A                    	(2013)	//充电费用
+#define CCU_SAM_SIG_ID_CHARGE_PRICE_B                    	(2014)	//充电费用
+#define CCU_SAM_SIG_ID_END_FLAG                          	(2015)	//采集信号结束位置
+
+
+//---------------------------------------------------------------------------------------------//
+//------------------------------------------信号量表（常规告警、特殊告警）-------------------------------------------//
+//---------------------------------------------------------------------------------------------//
+#define ALARM_ID_PILE_BEGIN_FLAG                         	(3000)	//桩事件信号开始位置
+#define ALARM_ID_PILE_ALARM_BEGIN_FLAG                   	(3001)	//桩告警事件信号开始位置
+#define ALARM_ID_RFID_COMM_LOST_ALARM                    	(3002)	//刷卡板通讯丢失
+#define ALARM_ID_POS_COMM_LOST_ALARM                     	(3003)	//pos机通讯丢失
+#define ALARM_ID_HMI_COMM_LOST_ALARM                     	(3004)	//HMI通讯丢失
+#define ALARM_ID_PILE_ALARM_END_FLAG                     	(3005)	//桩告警事件信号结束位置
+#define ALARM_ID_PILE_ERROR_BEGIN_FLAG                   	(3006)	//桩故障事件信号开始位置
+#define ALARM_ID_PCU_ERROR                               	(3007)	//功率柜故障
+#define ALARM_ID_ESTOP_ERROR                             	(3008)	//急停
+#define ALARM_ID_DOOR_GUARD_ERROR                        	(3009)	//门禁
+#define ALARM_ID_IMPACT_TEST_ERROR                       	(3010)	//防撞击
+#define ALARM_ID_ANTITHUNDER_ERROR                       	(3011)	//防雷
+#define ALARM_ID_WATER_IMMERSION_ERROR                   	(3012)	//水浸
+#define ALARM_ID_PLASTIC_HOUSING_TEST_ERROR              	(3013)	//塑壳
+#define ALARM_ID_PCU_COMM_LOST_ERROR                     	(3014)	//PCU通讯丢失
+#define ALARM_ID_METER_ADDR_CONFLICT_ERROR               	(3015)	//电表地址冲突
+#define ALARM_ID_IMD_ADD_CONFLICT_ERROR                  	(3016)	//IMD地址冲突
+#define ALARM_ID_POWER_DOWN_ERROR                        	(3017)	//桩掉电故障
+#define ALARM_ID_PILE_NUM_ERROR                          	(3018)	//桩编号错误
+#define ALARM_ID_GUN_NUM_ERROR                           	(3019)	//枪编号错误
+#define ALARM_ID_EEPROM_CHECK_ERROR                      	(3020)	//EEPROM自检失败
+#define ALARM_ID_CIG_COMM_LOST_ERROR                     	(3021)	//CIG小板通讯丢失
+#define ALARM_ID_PILE_ERROR_END_FLAG                     	(3022)	//桩故障事件信号结束位置
+#define ALARM_ID_PILE_ERROR_LEV_1                        	(3023)	//系统故障等级一级
+#define ALARM_ID_PILE_ERROR_LEV_2                        	(3024)	//系统故障等级二级
+#define ALARM_ID_PILE_END_FLAG                           	(3025)	//桩事件信号结束位置
+
+
+//---------------------------------------------------------------------------------------------//
+//-------------------------------------------开关量表（信号状态）--------------------------------------//
+//---------------------------------------------------------------------------------------------//
+#define SIGNAL_STATUS_BEGIN_FLAG                         	(4000)	//信号状态开始标志
+#define SIGNAL_STATUS_POWER_ON                           	(4001)	//开机
+#define SIGNAL_STATUS_POWER_OFF                          	(4002)	//关机
+#define SIGNAL_STATUS_UPDATA                             	(4003)	//升级
+#define SIGNAL_STATUS_THUNDER_DI                         	(4004)	//防雷DI状态
+#define SIGNAL_STATUS_DOOR_DI                            	(4005)	//门禁DI状态
+#define SIGNAL_STATUS_WATER_DI                           	(4006)	//水浸DI状态
+#define SIGNAL_STATUS_TIPPING_DI                         	(4007)	//防倾倒DI状态
+#define SIGNAL_STATUS_ESTOP_DI                           	(4008)	//急停DI状态
+#define SIGNAL_STATUS_PRECHARGE_A_DO                     	(4009)	//预充继电器DO状态
+#define SIGNAL_STATUS_PRECHARGE_B_DO                     	(4010)	//预充继电器DO状态
+#define SIGNAL_STATUS_CONNECTOR_A_POSITIVE_DO            	(4011)	//A枪主回路正极继电器DO状态
+#define SIGNAL_STATUS_CONNECTOR_A_NEGATIVE_DO            	(4012)	//A枪主回路负极继电器DO状态
+#define SIGNAL_STATUS_CONNECTOR_B_POSITIVE_DO            	(4013)	//B枪主回路正极继电器DO状态
+#define SIGNAL_STATUS_CONNECTOR_B_NEGATIVE_DO            	(4014)	//B枪主回路负极继电器DO状态
+#define SIGNAL_STATUS_CONNECTOR_A_FUSE_DI                	(4015)	//A枪熔断器DI状态
+#define SIGNAL_STATUS_CONNECTOR_B_FUSE_DI                	(4016)	//B枪熔断器DI状态
+#define SIGNAL_STATUS_CONNNECTOR_A_RETURN_DI             	(4017)	//A枪枪归位DI状态
+#define SIGNAL_STATUS_CONNNECTOR_B_RETURN_DI             	(4018)	//B枪枪归位DI状态
+#define SIGNAL_STATUS_K1                                 	(4019)	//K1继电器
+#define SIGNAL_STATUS_K2                                 	(4020)	//K2继电器
+#define SIGNAL_STATUS_K3                                 	(4021)	//K3继电器
+#define SIGNAL_STATUS_K4                                 	(4022)	//K4继电器
+#define SIGNAL_STATUS_K5                                 	(4023)	//K5继电器
+#define SIGNAL_STATUS_K6                                 	(4024)	//K6继电器
+#define SIGNAL_STATUS_K7                                 	(4025)	//K7继电器
+#define SIGNAL_STATUS_K8                                 	(4026)	//K8继电器
+#define SIGNAL_STATUS_END_FLAG                           	(4027)	//信号状态结束标志
+
+
+
+
+#endif

@@ -1,0 +1,2 @@
+../user_code/HAL/ex_eeprom/ex_eeprom.c:18:6:ExtEepromSaveParameter	16	static
+../user_code/HAL/ex_eeprom/ex_eeprom.c:23:6:ExtEepromReadParameter	16	static

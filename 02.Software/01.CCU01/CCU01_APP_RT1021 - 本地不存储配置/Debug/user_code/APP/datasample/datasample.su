@@ -1,0 +1,8 @@
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_gpio.h:112:20:GPIO_PortSet	16	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_gpio.h:136:20:GPIO_PortClear	16	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_gpio.h:176:24:GPIO_PinRead	16	static
+../user_code/APP/datasample/datasample.c:35:13:TemperatureSample	48	static
+../user_code/APP/datasample/datasample.c:148:13:CcuShutDown	32	static
+../user_code/APP/datasample/datasample.c:220:13:PowerOffSample	8	static
+../user_code/APP/datasample/datasample.c:242:13:DataSample_task	16	static
+../user_code/APP/datasample/datasample.c:260:6:DataSample_Init_task	24	static

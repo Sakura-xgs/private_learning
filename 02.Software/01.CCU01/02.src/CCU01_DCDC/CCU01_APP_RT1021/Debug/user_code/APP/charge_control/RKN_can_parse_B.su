@@ -1,0 +1,4 @@
+../user_code/APP/charge_control/RKN_can_parse_B.c:34:13:RecvMultipackTimeoutCb_B	24	static
+../user_code/APP/charge_control/RKN_can_parse_B.c:69:6:RecvMultipackTimerTreat_B	32	static
+../user_code/APP/charge_control/RKN_can_parse_B.c:160:6:HandleEBMultipack_B	32	static
+../user_code/APP/charge_control/RKN_can_parse_B.c:236:6:RKNCAN2Parse	40	static

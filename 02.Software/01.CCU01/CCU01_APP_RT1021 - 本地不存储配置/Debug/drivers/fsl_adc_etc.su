@@ -1,0 +1,9 @@
+../drivers/fsl_adc_etc.h:304:20:ADC_ETC_DoSoftwareReset	16	static
+../drivers/fsl_adc_etc.c:66:6:ADC_ETC_Init	24	static
+../drivers/fsl_adc_etc.c:123:6:ADC_ETC_Deinit	16	static
+../drivers/fsl_adc_etc.c:151:6:ADC_ETC_GetDefaultConfig	16	static
+../drivers/fsl_adc_etc.c:191:6:ADC_ETC_SetTriggerConfig	32	static
+../drivers/fsl_adc_etc.c:227:6:ADC_ETC_SetTriggerChainConfig	40	static
+../drivers/fsl_adc_etc.c:332:10:ADC_ETC_GetInterruptStatusFlags	24	static
+../drivers/fsl_adc_etc.c:373:6:ADC_ETC_ClearInterruptStatusFlags	24	static
+../drivers/fsl_adc_etc.c:409:10:ADC_ETC_GetADCConversionValue	32	static

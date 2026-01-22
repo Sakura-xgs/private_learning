@@ -1,0 +1,2 @@
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\drivers/fsl_gpio.h:101:20:GPIO_WritePinOutput	24	static
+../user_code/HAL/hal_cd4052b/hal_cd4052b.c:9:6:hal_cd4052b_choose_channel	16	static

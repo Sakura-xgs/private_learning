@@ -1,0 +1,9 @@
+../user_code/HAL/SignalManage/SignalManage.c:34:6:EepromDelay	8	static
+../user_code/HAL/SignalManage/SignalManage.c:40:6:SetSigVal	40	static
+../user_code/HAL/SignalManage/SignalManage.c:182:6:GetSigVal	24	static
+../user_code/HAL/SignalManage/SignalManage.c:258:6:InitSigVal	16	static
+../user_code/HAL/SignalManage/SignalManage.c:284:13:SetSignalValBuf	24	static
+../user_code/HAL/SignalManage/SignalManage.c:313:6:SetSignalValInit_Task	24	static
+../user_code/HAL/SignalManage/SignalManage.c:345:5:GetMsgVal	24	static
+../user_code/HAL/SignalManage/SignalManage.c:355:13:SaveSignal2EepromFunc	16	static
+../user_code/HAL/SignalManage/SignalManage.c:385:6:Save_Eeprom_Task	32	static

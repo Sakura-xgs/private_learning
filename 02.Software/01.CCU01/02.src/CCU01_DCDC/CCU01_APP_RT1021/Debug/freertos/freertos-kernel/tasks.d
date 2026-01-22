@@ -1,0 +1,28 @@
+freertos/freertos-kernel/tasks.o freertos/freertos-kernel/tasks.d: \
+ ../freertos/freertos-kernel/tasks.c \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/FreeRTOS.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\source/FreeRTOSConfig.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/projdefs.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/portable.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/deprecated_definitions.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\portable\GCC\ARM_CM4F/portmacro.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/mpu_wrappers.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/task.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/list.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/timers.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/task.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/stack_macros.h \
+ D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/freertos_tasks_c_additions.h
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/FreeRTOS.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\source/FreeRTOSConfig.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/projdefs.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/portable.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/deprecated_definitions.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\portable\GCC\ARM_CM4F/portmacro.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/mpu_wrappers.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/task.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/list.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/timers.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/task.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/stack_macros.h:
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\freertos\freertos-kernel\include/freertos_tasks_c_additions.h:

@@ -1,0 +1,10 @@
+E:\0003.Charger_Software\02.PDU01\02.src\PDU01_APP_RT1021\drivers/fsl_gpio.h:176:24:GPIO_PinRead	16	static
+E:\0003.Charger_Software\02.PDU01\02.src\PDU01_APP_RT1021\drivers/fsl_gpio.h:187:24:GPIO_ReadPinInput	16	static
+../user_code/APP/data_sample/data_sample.c:77:6:RelayStateSample	16	static
+../user_code/APP/data_sample/data_sample.c:90:6:TemperatureSample	24	static
+../user_code/APP/data_sample/data_sample.c:114:6:RelayAlarmSample	16	static
+../user_code/APP/data_sample/data_sample.c:185:6:PduSoftReset	8	static
+../user_code/APP/data_sample/data_sample.c:199:6:PduShutDown	16	static
+../user_code/APP/data_sample/data_sample.c:224:6:PowerOffSample	8	static
+../user_code/APP/data_sample/data_sample.c:252:6:DataSample_task	24	static
+../user_code/APP/data_sample/data_sample.c:285:6:DataSample_Init_task	32	static

@@ -1,0 +1,5 @@
+../user_code/HAL/hal_eeprom/hal_eeprom.c:30:6:eep_compare	24	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:39:10:FM24C64_IIC_READ_ARRAY	24	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:63:10:FM24C64_IIC_WRITE_ARRAY	24	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:87:6:ExtEepromSaveParameter	64	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:222:6:ExtEepromReadParameter	64	static

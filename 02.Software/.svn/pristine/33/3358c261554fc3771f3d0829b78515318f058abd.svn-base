@@ -1,0 +1,6393 @@
+/*
+ * tcp_client.c
+ *
+ *  Created on: 2024年9月30日
+ *      Author: qjwu
+ */
+#include <stdio.h>
+#include <string.h>
+#include "FreeRTOS.h"
+#include "task.h"
+#include "lwip/sockets.h"
+#include "hal_ext_rtc.h"
+#include "boot.h"
+#include "hal_eth_IF.h"
+#include "eth.h"
+
+#include "tcp_client.h"
+#include "meter_IF.h"
+#include "imd_IF.h"
+#include "pos_IF.h"
+#include "hmi_IF.h"
+#include "rfid_IF.h"
+#include "led_IF.h"
+#include "emergency_fault_IF.h"
+#include "SignalManage.h"
+#include "rgb_pwm_IF.h"
+#include "TcpBoot.h"
+#include "secc_logandupgrade.h"
+#include "charge_can.h"
+#include "charge_parse_IF.h"
+#include "cig_IF.h"
+#include "fan_pwm_IF.h"
+#include "datasample.h"
+
+static void FaultInjection(const U8 *ucArray_code, U8 length);
+
+static TCP_Semaphores_t g_sTcp_semaphores =
+{
+    .tcp_send_mutex = NULL,
+    .tcp_alarm_read_mutex = NULL,
+    .tcp_trigger_sem = NULL
+};
+static Local_State_t s_sLocal_state =
+{
+    .unMessageId = 1,
+    .ucAlarm_flag = 0,
+    .psMsg_head = NULL
+};
+__BSS(SRAM_OC) static Comm_Buff_t s_sComm_buff = {0};
+__BSS(SRAM_OC) static CCU_Alarm_Control_t g_sAlarm_control = {0};
+__BSS(SRAM_OC) static Device_Msg_Control_t g_sDevice_msg_control = {0};
+
+__BSS(SRAM_OC) Storage_Gun_Data_t g_sStorage_data = {0};
+__BSS(SRAM_OC) Gun_Data_t g_sGun_data[GUN_MAX_NUM] = {0};
+__BSS(SRAM_OC) Pile_Data_t g_sPile_data = {0};
+__BSS(SRAM_OC) CCU_Msg_Control_t g_sMsg_control = {0};
+
+SemaphoreHandle_t g_sAlarm_tigger_sem = NULL;
+S32 sockfd = -1;
+
+BOOL CheckConfig(U32 u32SigId, U8 ucValue)
+{
+	S32 iTmp_data = 0;
+
+	(void)GetSigVal(u32SigId, &iTmp_data);
+
+	return (ucValue != (U8)iTmp_data);
+}
+/**
+ * @brief 检查是否有需要重启的配置
+ */
+BOOL CheckConfigMsg(void)
+{
+	//是否选装HMI
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_USE_SCREEN_FLAG, g_sStorage_data.bUse_ad_screen))
+	{
+		return TRUE;
+	}
+	//hmi型号
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_HMI_MODEL, g_sStorage_data.ucHMI_model))
+	{
+		return TRUE;
+	}
+	//是否选装pos
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_USE_POS_FLAG, g_sStorage_data.bUse_ad_pos))
+	{
+		return TRUE;
+	}
+	//pos型号
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_POS_MODEL, g_sStorage_data.ucPOS_model))
+	{
+		return TRUE;
+	}
+	//是否选择rfid
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_USE_RFID_FLAG, g_sStorage_data.bUse_ad_rfid))
+	{
+		return TRUE;
+	}
+	//rfid型号
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_RFID_MODEL, g_sStorage_data.ucRFID_model))
+	{
+		return TRUE;
+	}
+
+	//A枪类型
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_GUN_TYPE_A, g_sStorage_data.sPublic_data[GUN_A].ucGun_type))
+	{
+		return TRUE;
+	}
+	//A枪id
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_GUN_ID_A, g_sStorage_data.sPublic_data[GUN_A].eGun_id))
+	{
+		return TRUE;
+	}
+	//电表型号
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_METER_MODEL_A, g_sStorage_data.sPublic_data[GUN_A].ucMeter_model))
+	{
+		return TRUE;
+	}
+	//SECC型号
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_SECC_MODEL_A, g_sStorage_data.sPublic_data[GUN_A].ucSECC_model))
+	{
+		return TRUE;
+	}
+	//IMD型号
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_IMD_MODEL_A, g_sStorage_data.sPublic_data[GUN_A].ucIMD_model))
+	{
+		return TRUE;
+	}
+
+	//B枪类型
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_GUN_TYPE_B, g_sStorage_data.sPublic_data[GUN_B].ucGun_type))
+	{
+		return TRUE;
+	}
+	//B枪id
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_GUN_ID_B, g_sStorage_data.sPublic_data[GUN_B].eGun_id))
+	{
+		return TRUE;
+	}
+	//电表型号
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_METER_MODEL_B, g_sStorage_data.sPublic_data[GUN_B].ucMeter_model))
+	{
+		return TRUE;
+	}
+	//SECC型号
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_SECC_MODEL_B, g_sStorage_data.sPublic_data[GUN_B].ucSECC_model))
+	{
+		return TRUE;
+	}
+	//IMD型号
+	if (TRUE == CheckConfig(CCU_SET_SIG_ID_IMD_MODEL_B, g_sStorage_data.sPublic_data[GUN_B].ucIMD_model))
+	{
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+/**
+ * @brief 确保在没有进行tcp传输的时候才close
+ */
+void TcpClose(void)
+{
+	if (NULL != g_sTcp_semaphores.tcp_send_mutex)
+	{
+		//防止传输中close导致错误
+		if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_send_mutex, portMAX_DELAY))
+		{
+			if (-1 != sockfd)
+			{
+				(void)lwip_close(sockfd);
+				sockfd = -1;
+			}
+			(void)xSemaphoreGive(g_sTcp_semaphores.tcp_send_mutex);
+		}
+	}
+}
+
+/**
+ * @brief 检测是否处于充电中
+ * @param eGun_id：枪id
+ * @return TRUE：充电中   FALSE：非充电中
+ */
+BOOL CheckChargingStatus(const Gun_Id_e eGun_id)
+{
+	if (FALSE == GunIdValidCheck(eGun_id))
+	{
+		return FALSE;
+	}
+
+	if ((STA_CHARGING != g_sGun_data[eGun_id].eGun_common_status)
+			&& (STA_START_CHARGE != g_sGun_data[eGun_id].eGun_common_status))
+	{
+		return FALSE;
+	}
+	else
+	{
+		return TRUE;
+	}
+}
+
+/**
+ * @brief 日志打印
+ * @param pcMsg：数据地址
+ * @param len：数据长度
+ * @return
+ */
+static void MessageDebug(const char *pcMsg, U32 len)
+{
+	if (USER_DEBUG_LEVEL == USER_DEBUG)
+	{
+		U32 i = 0;
+		uPRINTF("len = %d msg:", len);
+		for (i = 0; i < len; i++)
+		{
+			uPRINTF("%02x ", pcMsg[i]);
+		}
+		uPRINTF("\n");
+	}
+}
+
+/**
+ * @brief 转换成大端存储
+ * @param pucBuf：目前数据地址
+ * @param uiValue：原数据
+ * @return
+ */
+void Int2Bigendian(U8 *pucBuf, U32 uiValue)
+{
+	pucBuf[0] = (U8)((uiValue >> 24) & 0xFFU); // 取出高8位
+	pucBuf[1] = (U8)((uiValue >> 16) & 0xFFU); // 取出中间8位
+	pucBuf[2] = (U8)((uiValue >> 8) & 0xFFU);  // 取出次高8位
+	pucBuf[3] = (U8)(uiValue & 0xFFU);         // 取出最低8位
+}
+
+/**
+ * @brief 转换成小端存储int
+ * @param pucBuf：目前数据地址
+ * @param uiValue：原数据
+ * @return
+ */
+static void Int2Smallendian(U8 *pucBuf, U32 uiValue)
+{
+	pucBuf[0] = (U8)(uiValue & 0xFFU);         // 取出最低8位
+	pucBuf[1] = (U8)((uiValue >> 8) & 0xFFU);  // 取出次高8位
+	pucBuf[2] = (U8)((uiValue >> 16) & 0xFFU); // 取出中间8位
+	pucBuf[3] = (U8)((uiValue >> 24) & 0xFFU); // 取出高8位
+}
+
+/**
+ * @brief 将大端格式的32位整数转换为小端格式
+ * @param big_endian：源数据
+ * @return 小端数据
+ */
+static U32 BigEndianToLittleEndian(U32 big_endian) {
+	U32 little_endian = 0;
+
+    // 逐个字节提取并重新排列
+    little_endian |= (big_endian & 0xFF000000U) >> 24;
+    little_endian |= (big_endian & 0x00FF0000U) >> 8;
+    little_endian |= (big_endian & 0x0000FF00U) << 8;
+    little_endian |= (big_endian & 0x000000FFU) << 24;
+
+    return little_endian;
+}
+
+/**
+ * @brief 转换成小端存储short
+ * @param unValue：原数据
+ * @return 转换完成数据
+ */
+static U16 Short2Smallendian(U16 unValue)
+{
+	U16 unTemp = 0;
+
+	unTemp = (((unValue << 8) & 0xFF00U) | ((unValue >> 8) & 0xFFU));
+
+	return unTemp;
+}
+
+/**
+ * @brief 枪特殊状态设置
+ * @param eGun_id：枪id
+ * @return
+ */
+void SpecialStatusSetProcess(const Gun_Id_e eGun_id, const Charge_Special_e eStatus)
+{
+	if (FALSE == GunIdValidCheck(eGun_id))
+	{
+		return ;
+	}
+
+	g_sGun_data[eGun_id].eGun_special_status = eStatus;//通知充电逻辑部分
+
+	if (g_sGun_data[eGun_id].eGun_common_status != STA_FAULT)
+	{
+		GunStatusChange(eGun_id, STA_UNAVAILABLE, FALSE, FALSE);
+	}
+}
+
+/**
+ * @brief 控制TCP client线程发送上传报文
+ * @param bFlag：置位报文发送标志位
+ * @return
+ */
+void TcpSendControl(U8* ucFlag)
+{
+	*ucFlag = (U8)TRUE;
+
+	if (NULL != g_sTcp_semaphores.tcp_trigger_sem)
+	{
+		(void)xSemaphoreGive(g_sTcp_semaphores.tcp_trigger_sem);
+	}
+}
+
+/**
+ * @brief 判定故障属于那个区域，置位相应区域的bit位
+ * @param
+ * @return 填充完成告警/故障bit的数据
+ */
+U8 SetAlarmFlagFunc(void)
+{
+	S32 iTmp = 0;
+	U8 ucTmp = 0;
+
+	//告警
+	(void)GetSigVal(ALARM_ID_PILE_ERROR_LEV_1, &iTmp);
+	g_sAlarm_control.sAlarm_area_set.pile_warn_flag = (U8)iTmp;
+
+	if (0U != g_sGun_warn[GUN_A].sRecoverable_warn.uiWhole_flag)
+	{
+		g_sAlarm_control.sAlarm_area_set.gun_warn_flag_A = (U8)TRUE;
+	}
+	else
+	{
+		g_sAlarm_control.sAlarm_area_set.gun_warn_flag_A = (U8)FALSE;
+	}
+	if (0U != g_sGun_warn[GUN_B].sRecoverable_warn.uiWhole_flag)
+	{
+		g_sAlarm_control.sAlarm_area_set.gun_warn_flag_B = (U8)TRUE;
+	}
+	else
+	{
+		g_sAlarm_control.sAlarm_area_set.gun_warn_flag_B = (U8)FALSE;
+	}
+
+	//故障
+	(void)GetSigVal(ALARM_ID_PILE_ERROR_LEV_2, &iTmp);
+	g_sAlarm_control.sAlarm_area_set.pile_error_flag = (U8)iTmp;
+	if (0L != iTmp)
+	{
+		g_sAlarm_control.sAlarm_area_set.gun_error_flag_A = (U8)TRUE;
+		g_sAlarm_control.sAlarm_area_set.gun_error_flag_B = (U8)TRUE;
+	}
+	else
+	{
+		if ((0UL != g_sGun_fault[GUN_A].sGeneral_fault.uiWhole_flag) || (0U != g_sGun_fault[GUN_A].sRecoverable_fault.uiWhole_flag)
+				|| (0ULL != g_sSecc_fault[GUN_A].sSecc_fault_first.u64Whole_flag) || (0U != g_sGun_fault[GUN_A].sUnnecessary_upload_fault.ucWhole_flag)
+				|| (0ULL != g_sSecc_fault[GUN_A].sSecc_fault_second.u64Whole_flag) || (0UL != g_sSecc_fault[GUN_A].sSecc_fault_third.uiWhole_flag)
+				|| (0 != g_sSecc_fault[GUN_A].sSecc_fault_fourth.u64Whole_flag) || (0 != g_sSecc_fault[GUN_A].sSecc_fault_fifth.unWhole_flag))
+		{
+			g_sAlarm_control.sAlarm_area_set.gun_error_flag_A = (U8)TRUE;
+		}
+		else
+		{
+			g_sAlarm_control.sAlarm_area_set.gun_error_flag_A = (U8)FALSE;
+		}
+
+		if ((0U != g_sGun_fault[GUN_B].sGeneral_fault.uiWhole_flag) || (0U != g_sGun_fault[GUN_B].sRecoverable_fault.uiWhole_flag)
+				|| (0U != g_sSecc_fault[GUN_B].sSecc_fault_first.u64Whole_flag) || (0U != g_sGun_fault[GUN_B].sUnnecessary_upload_fault.ucWhole_flag)
+				|| (0U != g_sSecc_fault[GUN_B].sSecc_fault_second.u64Whole_flag) || (0U != g_sSecc_fault[GUN_B].sSecc_fault_third.uiWhole_flag)
+				|| (0U != g_sSecc_fault[GUN_B].sSecc_fault_fourth.u64Whole_flag) || (0 != g_sSecc_fault[GUN_B].sSecc_fault_fifth.unWhole_flag))
+		{
+			g_sAlarm_control.sAlarm_area_set.gun_error_flag_B = (U8)TRUE;
+		}
+		else
+		{
+			g_sAlarm_control.sAlarm_area_set.gun_error_flag_B = (U8)FALSE;
+		}
+	}
+
+	(void)memcpy(&ucTmp, &g_sAlarm_control.sAlarm_area_set, 1);
+
+	return ucTmp;
+}
+
+/**
+ * @brief 充电桩默认配置
+ * @param
+ * @return
+ */
+static void PileDefaultConfig(void)
+{
+	S32 iTmp_data = 0;
+	U8 ucTem_buf[33] = {0};
+
+	//SN
+	(void)memset(ucTem_buf, 0, sizeof(ucTem_buf));
+	(void)GetSigVal(CCU_SET_SIG_ID_SN_NUMBER_1_2_3_4, &iTmp_data);
+	(void)memcpy(ucTem_buf, &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_SN_NUMBER_5_6_7_8, &iTmp_data);
+	(void)memcpy(&ucTem_buf[4], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_SN_NUMBER_9_10_11_12, &iTmp_data);
+	(void)memcpy(&ucTem_buf[8], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_SN_NUMBER_13_14_15_16, &iTmp_data);
+	(void)memcpy(&ucTem_buf[12], &iTmp_data, sizeof(iTmp_data));
+	(void)memcpy(ucSN, ucTem_buf, sizeof(ucSN));
+
+	//平台不配置桩id，数据需要进一步校验
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_NUM, &iTmp_data);
+
+	if ((PILE_NUM_MIN <= (U8)iTmp_data) && ((U8)iTmp_data <= PILE_NUM_MAX))
+	{
+		g_sStorage_data.ucPile_num = (U8)iTmp_data;
+	}
+	else
+	{
+		g_sStorage_data.ucPile_num = 1U;
+	}
+	g_sStorage_data.bLocal_bill_flag = FALSE;
+	g_sStorage_data.bUse_ad_screen = TRUE;
+	g_sStorage_data.ucHMI_model = XRD_HMI_MODULE_FLAG;
+	g_sStorage_data.bUse_ad_pos = TRUE;
+	g_sStorage_data.ucPOS_model = BF_POS_MODULE_FLAG;
+	g_sStorage_data.bUse_ad_rfid = TRUE;
+	g_sStorage_data.ucRFID_model = HW_RFID_MODULE_FLAG;
+	g_sStorage_data.ucM1_key_mode_first = M1_KEY_MODE_A;
+	g_sStorage_data.ucM1_sector_first = 4;
+	g_sStorage_data.ucM1_block_first = 4;
+	(void)memcpy(g_sStorage_data.ucM1_password_first, "FFFFFFFFFFFF", sizeof(g_sStorage_data.ucM1_password_first));
+	g_sStorage_data.ucM1_key_mode_second = M1_KEY_MODE_A;
+	g_sStorage_data.ucM1_sector_second = 0;
+	g_sStorage_data.ucM1_block_second = 0;
+	(void)memcpy(g_sStorage_data.ucM1_password_second, "FFFFFFFFFFFF", sizeof(g_sStorage_data.ucM1_password_second));
+	g_sStorage_data.unCC1_12V_max = DEFAULT_CC1_12V_MAX;
+	g_sStorage_data.unCC1_12V_min = DEFAULT_CC1_12V_MIN;
+	g_sStorage_data.unCC1_6V_max = DEFAULT_CC1_6V_MAX;
+	g_sStorage_data.unCC1_6V_min = DEFAULT_CC1_6V_MIN;
+	g_sStorage_data.unCC1_4V_max = DEFAULT_CC1_4V_MAX;
+	g_sStorage_data.unCC1_4V_min = DEFAULT_CC1_4V_MIN;
+
+	g_sStorage_data.ucLight_on_time = DEFAULT_LIGHT_ON_TIME;
+	g_sStorage_data.ucLight_off_time = DEFAULT_LIGHT_OFF_TIME;
+
+	g_sStorage_data.sPublic_data[GUN_A].ucGun_type = CCS1;
+	g_sStorage_data.sPublic_data[GUN_A].eGun_id = ((2U*g_sStorage_data.ucPile_num)-1U);
+	g_sStorage_data.sPublic_data[GUN_A].unGun_max_vol = GUN_MAX_VOL_LIMIT;
+	g_sStorage_data.sPublic_data[GUN_A].unGun_min_vol = GUN_MIN_VOL_LIMIT;
+	g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur = GUN_MAX_CUR_LIMIT;
+	g_sStorage_data.sPublic_data[GUN_A].unGun_min_cur = GUN_MIN_CUR_LIMIT;
+	g_sStorage_data.sPublic_data[GUN_A].ucMeter_model = AKR_METER_MODULE_FLAG;
+	g_sStorage_data.sPublic_data[GUN_A].ucSECC_model = JWT_SECC_MODULE_FLAG;
+	g_sStorage_data.sPublic_data[GUN_A].ucIMD_model = GY_IMD_MODULE_FLAG;
+	g_sStorage_data.sPublic_data[GUN_A].unGun_warn_temp = WARNNING_TEMP;
+	g_sStorage_data.sPublic_data[GUN_A].unGun_fault_temp = FAULT_TEMP;
+	g_sStorage_data.sPublic_data[GUN_A].unGun_diff_temp = TEMP_DIFF;
+
+	g_sStorage_data.sPublic_data[GUN_B].ucGun_type = NACS;
+	g_sStorage_data.sPublic_data[GUN_B].eGun_id = 2U*g_sStorage_data.ucPile_num;
+	g_sStorage_data.sPublic_data[GUN_B].unGun_max_vol = GUN_MAX_VOL_LIMIT;
+	g_sStorage_data.sPublic_data[GUN_B].unGun_min_vol = GUN_MIN_VOL_LIMIT;
+	g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur = GUN_MAX_CUR_LIMIT;
+	g_sStorage_data.sPublic_data[GUN_B].unGun_min_cur = GUN_MIN_CUR_LIMIT;
+	g_sStorage_data.sPublic_data[GUN_B].ucMeter_model = AKR_METER_MODULE_FLAG;
+	g_sStorage_data.sPublic_data[GUN_B].ucSECC_model = JWT_SECC_MODULE_FLAG;
+	g_sStorage_data.sPublic_data[GUN_B].ucIMD_model = GY_IMD_MODULE_FLAG;
+	g_sStorage_data.sPublic_data[GUN_B].unGun_warn_temp = WARNNING_TEMP;
+	g_sStorage_data.sPublic_data[GUN_B].unGun_fault_temp = FAULT_TEMP;
+	g_sStorage_data.sPublic_data[GUN_B].unGun_diff_temp = TEMP_DIFF;
+}
+
+/**
+ * @brief 读取充电桩IIC配置
+ * @param
+ * @return
+ */
+static void PileReadConfig(void)
+{
+	U8 ucTem_buf[33] = {0};
+	S32 iTmp_data = 0;
+
+	//软件版本
+
+	//SN
+	(void)memset(ucTem_buf, 0, sizeof(ucTem_buf));
+	(void)GetSigVal(CCU_SET_SIG_ID_SN_NUMBER_1_2_3_4, &iTmp_data);
+	(void)memcpy(ucTem_buf, &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_SN_NUMBER_5_6_7_8, &iTmp_data);
+	(void)memcpy(&ucTem_buf[4], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_SN_NUMBER_9_10_11_12, &iTmp_data);
+	(void)memcpy(&ucTem_buf[8], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_SN_NUMBER_13_14_15_16, &iTmp_data);
+	(void)memcpy(&ucTem_buf[12], &iTmp_data, sizeof(iTmp_data));
+	(void)memcpy(ucSN, ucTem_buf, sizeof(ucSN));
+
+	//charge id
+	(void)memset(ucTem_buf, 0, sizeof(ucTem_buf));
+	(void)GetSigVal(CCU_SET_SIG_ID_CHARGE_ID_1_2_3_4, &iTmp_data);
+	(void)memcpy(ucTem_buf, &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_CHARGE_ID_5_6_7_8, &iTmp_data);
+	(void)memcpy(&ucTem_buf[4], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_CHARGE_ID_9_10_11_12, &iTmp_data);
+	(void)memcpy(&ucTem_buf[8], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_CHARGE_ID_13_14_15_16, &iTmp_data);
+	(void)memcpy(&ucTem_buf[12], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_CHARGE_ID_17_18_19_20, &iTmp_data);
+	(void)memcpy(&ucTem_buf[16], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_CHARGE_ID_21_22_23_24, &iTmp_data);
+	(void)memcpy(&ucTem_buf[20], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_CHARGE_ID_25_26_27_28, &iTmp_data);
+	(void)memcpy(&ucTem_buf[24], &iTmp_data, sizeof(iTmp_data));
+	(void)GetSigVal(CCU_SET_SIG_ID_CHARGE_ID_29_30_31_32, &iTmp_data);
+	(void)memcpy(&ucTem_buf[28], &iTmp_data, sizeof(iTmp_data));
+	(void)memcpy(g_sStorage_data.ucCharge_id, ucTem_buf, sizeof(g_sStorage_data.ucCharge_id));
+
+	//平台不配置桩id，数据需要进一步校验
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_NUM, &iTmp_data);
+
+	if ((PILE_NUM_MIN <= (U8)iTmp_data) && ((U8)iTmp_data <= PILE_NUM_MAX))
+	{
+		g_sStorage_data.ucPile_num = (U8)iTmp_data;
+	}
+	else
+	{
+		g_sStorage_data.ucPile_num = 1U;
+	}
+
+	//是否开启本地计费
+	(void)GetSigVal(CCU_SET_SIG_ID_ENABLE_LOCAL_BILL, &iTmp_data);
+	g_sStorage_data.bLocal_bill_flag = (iTmp_data==1)?TRUE:FALSE;
+	//是否选装HMI
+	(void)GetSigVal(CCU_SET_SIG_ID_USE_SCREEN_FLAG, &iTmp_data);
+	g_sStorage_data.bUse_ad_screen = (iTmp_data==1)?TRUE:FALSE;
+	//hmi型号
+	(void)GetSigVal(CCU_SET_SIG_ID_HMI_MODEL, &iTmp_data);
+	g_sStorage_data.ucHMI_model = (U8)iTmp_data;
+	//是否选装pos
+	(void)GetSigVal(CCU_SET_SIG_ID_USE_POS_FLAG, &iTmp_data);
+	g_sStorage_data.bUse_ad_pos = (iTmp_data==1)?TRUE:FALSE;
+	//pos型号
+	(void)GetSigVal(CCU_SET_SIG_ID_POS_MODEL, &iTmp_data);
+	g_sStorage_data.ucPOS_model = (U8)iTmp_data;
+	//是否选择rfid
+	(void)GetSigVal(CCU_SET_SIG_ID_USE_RFID_FLAG, &iTmp_data);
+	g_sStorage_data.bUse_ad_rfid = (iTmp_data==1)?TRUE:FALSE;
+	//rfid型号
+	(void)GetSigVal(CCU_SET_SIG_ID_RFID_MODEL, &iTmp_data);
+	g_sStorage_data.ucRFID_model = (U8)iTmp_data;
+
+	//刷卡板
+	//模式
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_KEY_MODE_FIRST, &iTmp_data);
+	g_sStorage_data.ucM1_key_mode_first = (U8)iTmp_data;
+	//扇区
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_SECTOR_FIRST, &iTmp_data);
+	g_sStorage_data.ucM1_sector_first = (U8)iTmp_data;
+	//块号
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_BLOCK_FIRST, &iTmp_data);
+	g_sStorage_data.ucM1_block_first = (U8)iTmp_data;
+	//秘钥
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_FIRST_1_2_3_4, &iTmp_data);
+	(void)memcpy(g_sStorage_data.ucM1_password_first, &iTmp_data, 4);
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_FIRST_5_6_7_8, &iTmp_data);
+	(void)memcpy(&g_sStorage_data.ucM1_password_first[4], &iTmp_data, 4);
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_FIRST_9_10_11_12, &iTmp_data);
+	(void)memcpy(&g_sStorage_data.ucM1_password_first[8], &iTmp_data, 4);
+
+	//模式
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_KEY_MODE_SECOND, &iTmp_data);
+	g_sStorage_data.ucM1_key_mode_second = (U8)iTmp_data;
+	//扇区
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_SECTOR_SECOND, &iTmp_data);
+	g_sStorage_data.ucM1_sector_second = (U8)iTmp_data;
+	//块号
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_BLOCK_SECOND, &iTmp_data);
+	g_sStorage_data.ucM1_block_second = (U8)iTmp_data;
+	//秘钥
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_SECOND_1_2_3_4, &iTmp_data);
+	(void)memcpy(g_sStorage_data.ucM1_password_second, &iTmp_data, 4);
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_SECOND_5_6_7_8, &iTmp_data);
+	(void)memcpy(&g_sStorage_data.ucM1_password_second[4], &iTmp_data, 4);
+	(void)GetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_SECOND_9_10_11_12, &iTmp_data);
+	(void)memcpy(&g_sStorage_data.ucM1_password_second[8], &iTmp_data, 4);
+
+	//CC1相关
+	(void)GetSigVal(CCU_SET_SIG_ID_CC1_12V_MAX, &iTmp_data);
+	g_sStorage_data.unCC1_12V_max = (U16)iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_CC1_12V_MIN, &iTmp_data);
+	g_sStorage_data.unCC1_12V_min = (U16)iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_CC1_6V_MAX, &iTmp_data);
+	g_sStorage_data.unCC1_6V_max = (U16)iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_CC1_6V_MIN, &iTmp_data);
+	g_sStorage_data.unCC1_6V_min = (U16)iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_CC1_4V_MAX, &iTmp_data);
+	g_sStorage_data.unCC1_4V_max = (U16)iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_CC1_4V_MIN, &iTmp_data);
+	g_sStorage_data.unCC1_4V_min = (U16)iTmp_data;
+
+	//照明灯控制
+	(void)GetSigVal(CCU_SET_SIG_ID_LIGHT_ON_TIME, &iTmp_data);
+	g_sStorage_data.ucLight_on_time = iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_LIGHT_OFF_TIME, &iTmp_data);
+	g_sStorage_data.ucLight_off_time = iTmp_data;
+
+	//A枪类型
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_TYPE_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].ucGun_type = (U8)iTmp_data;
+	//A枪id
+	//(void)GetSigVal(CCU_SET_SIG_ID_GUN_ID_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].eGun_id = ((2U*g_sStorage_data.ucPile_num)-1U);
+
+	//最大输出电压
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_MAX_OUTPUT_VOL_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].unGun_max_vol = (U16)iTmp_data;
+	//最小输出电压
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_MIN_OUTPUT_VOL_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].unGun_min_vol = (U16)iTmp_data;
+	//最大输出电流
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_MAX_OUTPUT_CUR_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur = (U16)iTmp_data;
+	//最小输出电流
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_MIN_OUTPUT_CUR_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].unGun_min_cur = (U16)iTmp_data;
+	//电表型号
+	(void)GetSigVal(CCU_SET_SIG_ID_METER_MODEL_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].ucMeter_model = (U8)iTmp_data;
+	//SECC型号
+	(void)GetSigVal(CCU_SET_SIG_ID_SECC_MODEL_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].ucSECC_model = (U8)iTmp_data;
+	//IMD型号
+	(void)GetSigVal(CCU_SET_SIG_ID_IMD_MODEL_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].ucIMD_model = (U8)iTmp_data;
+
+	//枪温相关
+	(void)GetSigVal(CCU_SET_SIG_ID_WARN_TEMP_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].unGun_warn_temp = (U16)iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_FAULT_TEMP_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].unGun_fault_temp = (U16)iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_DIFF_TEMP_A, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_A].unGun_diff_temp = (U16)iTmp_data;
+
+	//B枪类型
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_TYPE_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].ucGun_type = (U8)iTmp_data;
+	//B枪id
+	//(void)GetSigVal(CCU_SET_SIG_ID_GUN_ID_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].eGun_id = 2U*g_sStorage_data.ucPile_num;
+	//最大输出电压
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_MAX_OUTPUT_VOL_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].unGun_max_vol = (U16)iTmp_data;
+	//最小输出电压
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_MIN_OUTPUT_VOL_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].unGun_min_vol = (U16)iTmp_data;
+	//最大输出电流
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_MAX_OUTPUT_CUR_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur = (U16)iTmp_data;
+	//最小输出电流
+	(void)GetSigVal(CCU_SET_SIG_ID_GUN_MIN_OUTPUT_CUR_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].unGun_min_cur = (U16)iTmp_data;
+	//电表型号
+	(void)GetSigVal(CCU_SET_SIG_ID_METER_MODEL_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].ucMeter_model = (U8)iTmp_data;
+	//SECC型号
+	(void)GetSigVal(CCU_SET_SIG_ID_SECC_MODEL_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].ucSECC_model = (U8)iTmp_data;
+	//IMD型号
+	(void)GetSigVal(CCU_SET_SIG_ID_IMD_MODEL_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].ucIMD_model = (U8)iTmp_data;
+
+	//枪温相关
+	(void)GetSigVal(CCU_SET_SIG_ID_WARN_TEMP_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].unGun_warn_temp = (U16)iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_FAULT_TEMP_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].unGun_fault_temp = (U16)iTmp_data;
+	(void)GetSigVal(CCU_SET_SIG_ID_DIFF_TEMP_B, &iTmp_data);
+	g_sStorage_data.sPublic_data[GUN_B].unGun_diff_temp = (U16)iTmp_data;
+}
+
+/**
+ * @brief 获取桩端状态值
+ * @param
+ * @return
+ */
+static void GetPileDefaultStatus(void)
+{
+	//默认调试模式
+	g_sPile_data.ucPile_config_mode = RELEASE_MODE;
+	//默认使能
+	g_sPile_data.bSPD_enable_flag = SPD_ENABLE;
+	g_sPile_data.bDoor_enable_flag = DOOR_ENABLE;
+	g_sPile_data.bWater_enable_flag = WATER_ENABLE;
+	g_sPile_data.bHit_enable_flag = HIT_ENABLE;
+	g_sPile_data.bMCB_enable_flag = MCB_ENABLE;
+
+	//枪禁用状态
+	g_sGun_data[GUN_A].ucGun_disable_status = (U8)TRUE;
+	//默认最大输出功率180KW
+	g_sGun_data[GUN_A].unAdmin_limit_power = GUN_DEFAULT_MAX_POWER;
+	//枪禁用状态
+	g_sGun_data[GUN_B].ucGun_disable_status = (U8)TRUE;
+	//默认最大输出功率180KW
+	g_sGun_data[GUN_B].unAdmin_limit_power = GUN_DEFAULT_MAX_POWER;
+}
+
+/**
+ * @brief 获取桩端配置
+ * @param
+ * @return
+ */
+void GetPileConfig(void)
+{
+	S32 siConfig_flag = DEFAULT_CONFIG;
+
+	(void)memset(&g_sStorage_data, 0, sizeof(Storage_Gun_Data_t));
+
+	(void)GetSigVal(CCU_SET_SIG_ID_FLAG, &siConfig_flag);
+
+	if (ADMIN_CONFIG == siConfig_flag)
+	{
+		PileReadConfig();
+		my_printf(USER_INFO, "CCU use server config\n");
+	}
+	else
+	{
+		PileDefaultConfig();
+		my_printf(USER_INFO, "CCU use default config\n");
+	}
+	//获取桩默认状态
+	GetPileDefaultStatus();
+}
+
+/**
+ * @brief 封装tcp发送
+ * @param s_sComm_buff.ucSend_buff：发送数据
+ * @param s_sComm_buff.uiSend_length：发送长度
+ * @return
+ */
+BOOL TcpSend(const U8 *ucSend_buff, U32 uiSend_length)
+{
+	BOOL bflag = 0;
+	S32 sTemp = (S32)uiSend_length;
+
+	if (-1 != sockfd)
+	{
+		if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_send_mutex, portMAX_DELAY))
+		{
+			if (sTemp == send(sockfd, ucSend_buff, uiSend_length, 0))
+			{
+				bflag = TRUE;
+			}
+			else
+			{
+				bflag = FALSE;
+			}
+			(void)xSemaphoreGive(g_sTcp_semaphores.tcp_send_mutex);
+		}
+	}
+	return bflag;
+}
+
+/**
+ * @brief 充电桩登录报文数据填充
+ * @param pucDst:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0001(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_LOGIN_IN_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+	S16 nTemp = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_LOGIN_IN_CMD >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (C_LOGIN_IN_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)((C_LOGIN_IN_LEN >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_LOGIN_IN_LEN & 0xffU);
+	i++;
+
+	//软件版本
+	(void)memcpy(&pucDst[i], g_sPile_data.ucSoftware, sizeof(g_sPile_data.ucSoftware));
+	i += sizeof(g_sPile_data.ucSoftware);
+	//硬件版本
+	(void)memcpy(&pucDst[i], g_sPile_data.ucHardware, sizeof(g_sPile_data.ucHardware));
+	i += sizeof(g_sPile_data.ucHardware);
+	//sn码
+	(void)memcpy(&pucDst[i], ucSN, sizeof(ucSN));
+	i += sizeof(ucSN);
+	//mac地址
+	U8 uiTemp[6] = {0};
+	GetMacAddress(uiTemp);
+	(void)snprintf(&pucDst[i], UPLOAD_MACADDRESS_LEN + 1U, "%02x:%02x:%02x:%02x:%02x:%02x", uiTemp[0], uiTemp[1], uiTemp[2],uiTemp[3], uiTemp[4], uiTemp[5]);
+	i += UPLOAD_MACADDRESS_LEN;
+	//charge id
+	(void)memcpy(&pucDst[i], g_sStorage_data.ucCharge_id, sizeof(g_sStorage_data.ucCharge_id));
+	i += sizeof(g_sStorage_data.ucCharge_id);
+	//是否开启本地计费
+	pucDst[i] = (U8)g_sStorage_data.bLocal_bill_flag;
+	i++;
+	//POS是否存在
+	pucDst[i] = (U8)g_sStorage_data.bUse_ad_pos;
+	i++;
+	//POS型号
+	pucDst[i] = g_sStorage_data.ucPOS_model;
+	i++;
+	//RFID是否存在
+	pucDst[i] = (U8)g_sStorage_data.bUse_ad_rfid;
+	i++;
+	//RFID型号
+	pucDst[i] = g_sStorage_data.ucRFID_model;
+	i++;
+	//广告屏是否存在
+	pucDst[i] = (U8)g_sStorage_data.bUse_ad_screen;
+	i++;
+	//显示屏型号
+	pucDst[i] = g_sStorage_data.ucHMI_model;
+	i++;
+	//M1卡密码模式
+	pucDst[i] = g_sStorage_data.ucM1_key_mode_first;
+	i++;
+	//M1卡密码扇区
+	pucDst[i] = g_sStorage_data.ucM1_sector_first;
+	i++;
+	//M1卡数据块号
+	pucDst[i] = g_sStorage_data.ucM1_block_first;
+	i++;
+	//M1卡数据秘钥
+	(void)memcpy(&pucDst[i], g_sStorage_data.ucM1_password_first, sizeof(g_sStorage_data.ucM1_password_first));
+	i += sizeof(g_sStorage_data.ucM1_password_first);
+	//M1卡密码模式
+	pucDst[i] = g_sStorage_data.ucM1_key_mode_second;
+	i++;
+	//M1卡密码扇区
+	pucDst[i] = g_sStorage_data.ucM1_sector_second;
+	i++;
+	//M1卡数据块号
+	pucDst[i] = g_sStorage_data.ucM1_block_second;
+	i++;
+	//M1卡数据秘钥
+	(void)memcpy(&pucDst[i], g_sStorage_data.ucM1_password_second, sizeof(g_sStorage_data.ucM1_password_second));
+	i += sizeof(g_sStorage_data.ucM1_password_second);
+	//12V上限
+	pucDst[i] = (U8)((g_sStorage_data.unCC1_12V_max >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.unCC1_12V_max & 0xffU);
+	i++;
+	//12V下限
+	pucDst[i] = (U8)((g_sStorage_data.unCC1_12V_min >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.unCC1_12V_min & 0xffU);
+	i++;
+	//6V上限
+	pucDst[i] = (U8)((g_sStorage_data.unCC1_6V_max >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.unCC1_6V_max & 0xffU);
+	i++;
+	//6V下限
+	pucDst[i] = (U8)((g_sStorage_data.unCC1_6V_min >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.unCC1_6V_min & 0xffU);
+	i++;
+	//4V上限
+	pucDst[i] = (U8)((g_sStorage_data.unCC1_4V_max >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.unCC1_4V_max & 0xffU);
+	i++;
+	//4V下限
+	pucDst[i] = (U8)((g_sStorage_data.unCC1_4V_min >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.unCC1_4V_min & 0xffU);
+	i++;
+	//照明灯
+	pucDst[i] = g_sStorage_data.ucLight_on_time;
+	i++;
+	pucDst[i] = g_sStorage_data.ucLight_off_time;
+	i++;
+	//预留
+	i += C_LOGIN_IN_PILE_RESERVE_LEN;
+
+	//A枪类型
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].ucGun_type;
+	i++;
+	//A枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+	i++;
+	//最大输出电压
+	pucDst[i] = (U8)((g_sStorage_data.sPublic_data[GUN_A].unGun_max_vol >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.sPublic_data[GUN_A].unGun_max_vol & 0xffU);
+	i++;
+	//最小输出电压
+	pucDst[i] = (U8)((g_sStorage_data.sPublic_data[GUN_A].unGun_min_vol >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.sPublic_data[GUN_A].unGun_min_vol & 0xffU);
+	i++;
+	//最大输出电流
+	pucDst[i] = (U8)((g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur & 0xffU);
+	i++;
+	//最小输出电流
+	pucDst[i] = (U8)((g_sStorage_data.sPublic_data[GUN_A].unGun_min_cur >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.sPublic_data[GUN_A].unGun_min_cur & 0xffU);
+	i++;
+
+	//电表型号
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].ucMeter_model;
+	i++;
+	//SECC型号
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].ucSECC_model;
+	i++;
+	//IMD型号
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].ucIMD_model;
+	i++;
+	//A枪告警枪温
+	nTemp = g_sStorage_data.sPublic_data[GUN_A].unGun_warn_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//A枪故障枪温
+	nTemp = g_sStorage_data.sPublic_data[GUN_A].unGun_fault_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//A枪正负极枪温温差阈值
+	nTemp = g_sStorage_data.sPublic_data[GUN_A].unGun_diff_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//预留
+	i += C_LOGIN_IN_GUN_RESERVE_LEN;
+
+	//B枪类型
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].ucGun_type;
+	i++;
+	//B枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+	i++;
+	//最大输出电压
+	pucDst[i] = (U8)((g_sStorage_data.sPublic_data[GUN_B].unGun_max_vol >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.sPublic_data[GUN_B].unGun_max_vol & 0xffU);
+	i++;
+	//最小输出电压
+	pucDst[i] = (U8)((g_sStorage_data.sPublic_data[GUN_B].unGun_min_vol >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.sPublic_data[GUN_B].unGun_min_vol & 0xffU);
+	i++;
+	//最大输出电流
+	pucDst[i] = (U8)((g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur & 0xffU);
+	i++;
+	//最小输出电流
+	pucDst[i] = (U8)((g_sStorage_data.sPublic_data[GUN_B].unGun_min_cur >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sStorage_data.sPublic_data[GUN_B].unGun_min_cur & 0xffU);
+	i++;
+
+	//电表型号
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].ucMeter_model;
+	i++;
+	//SECC型号
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].ucSECC_model;
+	i++;
+	//IMD型号
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].ucIMD_model;
+	i++;
+	//B枪告警枪温
+	nTemp = g_sStorage_data.sPublic_data[GUN_B].unGun_warn_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//B枪故障枪温
+	nTemp = g_sStorage_data.sPublic_data[GUN_B].unGun_fault_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//B枪正负极枪温温差阈值
+	nTemp = g_sStorage_data.sPublic_data[GUN_B].unGun_diff_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//预留
+	i += C_LOGIN_IN_GUN_RESERVE_LEN;
+
+	if (i == (C_LOGIN_IN_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩登录指令发送0001
+ * @param
+ * @return
+ */
+static void CCU_Send0001(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0001(s_sComm_buff.ucSend_buff);
+
+	//MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	if (TRUE == TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length))
+	{
+		//发送成功
+		my_printf(USER_INFO, "send 0001 login success\n");
+	}
+	else
+	{
+		//发送失败
+		my_printf(USER_INFO, "send 0001 login failed\n");
+	}
+}
+
+/**
+ * @brief 充电桩状态报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0002(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_GUN_STATUS_DATA_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+	S16 nTemp = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_GUN_STATUS_DATA_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_GUN_STATUS_DATA_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)((C_GUN_STATUS_DATA_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_GUN_STATUS_DATA_LEN & 0xffU);
+	i++;
+
+	//日志模式
+	pucDst[i] = g_sPile_data.ucPile_config_mode;
+	i++;
+	//防雷
+	pucDst[i] = (U8)g_sPile_data.bSPD_enable_flag;
+	i++;
+	pucDst[i] = (U8)g_sPile_data.bSPD_io_status;
+	i++;
+	//门禁
+	pucDst[i] = (U8)g_sPile_data.bDoor_enable_flag;
+	i++;
+	pucDst[i] = (U8)g_sPile_data.bDoor_io_status;
+	i++;
+	//水浸
+	pucDst[i] = (U8)g_sPile_data.bWater_enable_flag;
+	i++;
+	pucDst[i] = (U8)g_sPile_data.bWater_io_status;
+	i++;
+	//撞击
+	pucDst[i] = (U8)g_sPile_data.bHit_enable_flag;
+	i++;
+	pucDst[i] = (U8)g_sPile_data.bHit_io_status;
+	i++;
+	//塑壳
+	pucDst[i] = (U8)g_sPile_data.bMCB_enable_flag;
+	i++;
+	pucDst[i] = (U8)g_sPile_data.bMCB_io_status;
+	i++;
+	//急停
+	pucDst[i] = (U8)g_sPile_data.bEstop_io_status;
+	i++;
+	//风扇占空比
+	pucDst[i] = g_sPile_data.ucFan_pwm;
+	i++;
+
+	//故障/告警所属区域,bit位表示
+	pucDst[i] = s_sLocal_state.ucAlarm_flag;
+	i++;
+
+	if (NULL != g_sTcp_semaphores.tcp_alarm_read_mutex)
+	{
+		if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_alarm_read_mutex, portMAX_DELAY))
+		{
+			//桩告警
+			(void)memcpy(&pucDst[i], &g_sAlarm_control.sPile_alarm_buff.sPile_warn, sizeof(g_sAlarm_control.sPile_alarm_buff.sPile_warn));
+			i+=PILE_DEVICE_LEN;
+			//桩故障
+			(void)memcpy(&pucDst[i], &g_sAlarm_control.sPile_alarm_buff.sPile_fault, sizeof(g_sAlarm_control.sPile_alarm_buff.sPile_fault));
+			i+=PILE_DEVICE_LEN;
+			(void)xSemaphoreGive(g_sTcp_semaphores.tcp_alarm_read_mutex);
+			//uPRINTF("RFID status = %d\n", g_sAlarm_control.sPile_alarm_buff.sPile_warn.ucPile_warn_buf[0]);
+		}
+	}
+
+	//预留
+	i += C_GUN_STATUS_DATA_PILE_FAULT_RESERVE_LEN;
+	//风扇继电器
+	pucDst[i] =	g_sPile_data.ucFan_relay_status;
+	i++;
+	//HMI照明灯
+	pucDst[i] = g_sPile_data.ucHMI_relay_status;
+	i++;
+	//预留
+	i += C_GUN_STATUS_DATA_PILE_RESERVE_LEN;
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+	i++;
+	//当前电表读数
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_A].uiCurrent_meter_dn);
+	i += sizeof(g_sGun_data[GUN_A].uiCurrent_meter_dn);
+	//枪普通状态
+	//pucDst[i] = (U8)g_sGun_data[GUN_A].eGun_common_status;
+	if (0U != g_sAlarm_control.sAlarm_area_set.gun_error_flag_A)
+	{
+		//充电中不直接置位为故障
+		if (FALSE == CheckChargingStatus(GUN_A))
+		{
+			pucDst[i] = (U8)STA_FAULT;
+			i++;
+		}
+		else
+		{
+			pucDst[i] = (U8)g_sGun_data[GUN_A].eGun_common_status;
+			i++;
+		}
+	}
+	else//未检测到故障
+	{
+		//恢复
+		if (STA_FAULT == g_sGun_data[GUN_A].eGun_common_status)
+		{
+			if ((U8)UNPLUGGED == GetGunStatus(GUN_A))
+			{
+				pucDst[i] = (U8)STA_IDLE;
+				i++;
+			}
+			else
+			{
+				pucDst[i] = (U8)STA_PLUGING;
+				i++;
+			}
+		}
+		else
+		{
+			pucDst[i] = (U8)g_sGun_data[GUN_A].eGun_common_status;
+			i++;
+		}
+	}
+	//枪禁用状态
+	pucDst[i] = g_sGun_data[GUN_A].ucGun_disable_status;
+	i++;
+	//cp/cc1状态
+	pucDst[i] = g_sGun_data[GUN_A].eConnect_status;
+	i++;
+	//DC+温度
+	nTemp = g_sGun_data[GUN_A].nDC_positive_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//DC-温度
+	nTemp = g_sGun_data[GUN_A].nDC_negative_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//回枪监测
+	pucDst[i] = (U8)g_sGun_data[GUN_A].bGun_return_flag;
+	i++;
+	//预充继电器状态
+	pucDst[i] = (U8)g_sGun_data[GUN_A].bPrecharge_relay_status;
+	i++;
+	//主回路DC+状态
+	pucDst[i] = (U8)g_sGun_data[GUN_A].bPositive_relay_status;
+	i++;
+	//主回路DC-状态
+	pucDst[i] = (U8)g_sGun_data[GUN_A].bNegative_relay_status;
+	i++;
+	//DC+反馈
+	pucDst[i] = (U8)g_sGun_data[GUN_A].bPositive_relay_feedback_status;
+	i++;
+	//DC-反馈
+	pucDst[i] = (U8)g_sGun_data[GUN_A].bNegative_relay_feedback_status;
+	i++;
+	//熔断器状态
+	pucDst[i] = (U8)g_sGun_data[GUN_A].bFuse_io_status;
+	i++;
+	//A枪PWM占空比
+	pucDst[i] = g_sGun_data[GUN_A].ucLed_dutycycle[0];
+	i++;
+	//A枪PWM占空比
+	pucDst[i] = g_sGun_data[GUN_A].ucLed_dutycycle[1];
+	i++;
+	//A枪PWM占空比
+	pucDst[i] = g_sGun_data[GUN_A].ucLed_dutycycle[2];
+	i++;
+	//平台限制最大功率
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].unAdmin_limit_power >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].unAdmin_limit_power & 0xffU);
+	i++;
+
+	if (NULL != g_sTcp_semaphores.tcp_alarm_read_mutex)
+	{
+		if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_alarm_read_mutex, portMAX_DELAY))
+		{
+			//枪告警
+			(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_warn, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_warn));
+			i+=GUN_WARN_DEVICE_LEN;
+			//预留
+			i+=GUN_WARN_RESERVE_LEN;
+			//枪故障
+			(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault));
+			i+=GUN_ERROR_DEVICE_LEN;
+			//预留
+			i+=GUN_ERROR_RESERVE_LEN;
+			(void)xSemaphoreGive(g_sTcp_semaphores.tcp_alarm_read_mutex);
+		}
+	}
+	//辅源控制状态
+	pucDst[i] = (g_sCig_write_control.unControl_data >> 3U) & 0x01;
+	i++;
+	//辅源反馈状态
+	pucDst[i] = !g_sGun_data[GUN_A].ucBms_assist_power_feedback_status;
+	i++;
+	//枪锁控制状态
+	pucDst[i] = (g_sCig_write_control.unControl_data >> 1U) & 0x01;
+	i++;
+	//枪锁反馈状态
+	pucDst[i] = g_sGun_data[GUN_A].ucGun_lock_relay_feedback_status;
+	i++;
+	//CC1检测值
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].unCC1_vol >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].unCC1_vol & 0xffU);
+	i++;
+	//预留
+	i += C_GUN_STATUS_DATA_GUN_RESERVE_LEN;
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+	i++;
+	//当前电表读数
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_B].uiCurrent_meter_dn);
+	i += sizeof(g_sGun_data[GUN_B].uiCurrent_meter_dn);
+	//枪普通状态
+	//pucDst[i] = (U8)g_sGun_data[GUN_B].eGun_common_status;
+	//有故障
+	if (0U != g_sAlarm_control.sAlarm_area_set.gun_error_flag_B)
+	{
+		//PCU要求充电中不直接置位为故障
+		if (FALSE == CheckChargingStatus(GUN_B))
+		{
+			pucDst[i] = (U8)STA_FAULT;
+			i++;
+		}
+		else
+		{
+			pucDst[i] = (U8)g_sGun_data[GUN_B].eGun_common_status;
+			i++;
+		}
+	}
+	else//未检测到故障
+	{
+		//恢复
+		if (STA_FAULT == g_sGun_data[GUN_B].eGun_common_status)
+		{
+			if ((U8)UNPLUGGED == GetGunStatus(GUN_B))
+			{
+				pucDst[i] = (U8)STA_IDLE;
+				i++;
+			}
+			else
+			{
+				pucDst[i] = (U8)STA_PLUGING;
+				i++;
+			}
+		}
+		else
+		{
+			pucDst[i] = (U8)g_sGun_data[GUN_B].eGun_common_status;
+			i++;
+		}
+	}
+	//枪禁用状态
+	pucDst[i] = g_sGun_data[GUN_B].ucGun_disable_status;
+	i++;
+	//cp/cc1状态
+	pucDst[i] = g_sGun_data[GUN_B].eConnect_status;
+	i++;
+	//DC+温度
+	nTemp = g_sGun_data[GUN_B].nDC_positive_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//DC-温度
+	nTemp = g_sGun_data[GUN_B].nDC_negative_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//回枪监测
+	pucDst[i] = (U8)g_sGun_data[GUN_B].bGun_return_flag;
+	i++;
+	//预充继电器状态
+	pucDst[i] = (U8)g_sGun_data[GUN_B].bPrecharge_relay_status;
+	i++;
+	//主回路DC+状态
+	pucDst[i] = (U8)g_sGun_data[GUN_B].bPositive_relay_status;
+	i++;
+	//主回路DC-状态
+	pucDst[i] = (U8)g_sGun_data[GUN_B].bNegative_relay_status;
+	i++;
+	//DC+反馈
+	pucDst[i] = (U8)g_sGun_data[GUN_B].bPositive_relay_feedback_status;
+	i++;
+	//DC-反馈
+	pucDst[i] = (U8)g_sGun_data[GUN_B].bNegative_relay_feedback_status;
+	i++;
+	//熔断器状态
+	pucDst[i] = (U8)g_sGun_data[GUN_B].bFuse_io_status;
+	i++;
+	//B枪PWM占空比
+	pucDst[i] = g_sGun_data[GUN_B].ucLed_dutycycle[0];
+	i++;
+	//B枪PWM占空比
+	pucDst[i] = g_sGun_data[GUN_B].ucLed_dutycycle[1];
+	i++;
+	//B枪PWM占空比
+	pucDst[i] = g_sGun_data[GUN_B].ucLed_dutycycle[2];
+	i++;
+	//平台限制最大功率
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].unAdmin_limit_power >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].unAdmin_limit_power & 0xffU);
+	i++;
+	if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_alarm_read_mutex, portMAX_DELAY))
+	{
+		//枪告警
+		(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_warn, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_warn));
+		i+=GUN_WARN_DEVICE_LEN;
+		//预留
+		i+=GUN_WARN_RESERVE_LEN;
+		//枪故障
+		(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault));
+		i+=GUN_ERROR_DEVICE_LEN;
+		//预留
+		i+=GUN_ERROR_RESERVE_LEN;
+		(void)xSemaphoreGive(g_sTcp_semaphores.tcp_alarm_read_mutex);
+	}
+	//辅源控制状态
+	pucDst[i] = (g_sCig_write_control.unControl_data >> 2U) & 0x01;
+	i++;
+	//辅源反馈状态
+	pucDst[i] = !g_sGun_data[GUN_B].ucBms_assist_power_feedback_status;
+	i++;
+	//枪锁控制状态
+	pucDst[i] = g_sCig_write_control.unControl_data & 0x01;
+	i++;
+	//枪锁反馈状态
+	pucDst[i] = g_sGun_data[GUN_B].ucGun_lock_relay_feedback_status;
+	i++;
+	//CC1检测值
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].unCC1_vol >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].unCC1_vol & 0xffU);
+	i++;
+	//预留
+	i += C_GUN_STATUS_DATA_GUN_RESERVE_LEN;
+
+	if (i == (C_GUN_STATUS_DATA_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩心跳/状态上报0002
+ * @param
+ * @return
+ */
+static void CCU_Send0002(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+	s_sComm_buff.uiSend_length = CCU_Data0002(s_sComm_buff.ucSend_buff);
+
+	MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief 充电桩启动鉴权报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0003(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_GUN_AUTH_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_GUN_AUTH_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_GUN_AUTH_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_GUN_AUTH_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_GUN_AUTH_LEN & 0xffU);
+	i++;
+
+	//A枪启动
+	if ((U8)START_CHARGE_AUTH == g_sGun_data[GUN_A].sTemp.ucAuth_type)
+	{
+		if (g_sMsg_control.sGun_charge_control.ucStart_id == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+		{
+			//枪id
+			pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+			i++;
+			//鉴权类型
+			pucDst[i] = START_CHARGE_AUTH;
+			i++;
+			//启动类型
+			pucDst[i] = (U8)g_sGun_data[GUN_A].sTemp.eStart_Charge_type;
+			i++;
+			//idtag
+			(void)memcpy(&pucDst[i], g_sGun_data[GUN_A].sTemp.ucIdtag, sizeof(g_sGun_data[GUN_A].sTemp.ucIdtag));
+			i += sizeof(g_sGun_data[GUN_A].sTemp.ucIdtag);
+		}
+	}
+	else if ((U8)STOP_CHARGE_AUTH == g_sGun_data[GUN_A].sTemp.ucAuth_type)//A枪结束
+	{
+		if (g_sMsg_control.sGun_charge_control.ucFinish_id == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+		{
+			//枪id
+			pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+			i++;
+			//鉴权类型
+			pucDst[i] = STOP_CHARGE_AUTH;
+			i++;
+			//结束类型
+			pucDst[i] = (U8)g_sGun_data[GUN_A].sTemp.eStop_Charge_type;
+			i++;
+			//idtag
+			(void)memcpy(&pucDst[i], g_sGun_data[GUN_A].sTemp.ucIdtag, sizeof(g_sGun_data[GUN_A].sTemp.ucIdtag));
+			i += sizeof(g_sGun_data[GUN_A].sTemp.ucIdtag);
+		}
+	}
+	else
+	{
+		//
+	}
+
+	//B枪启动
+	if ((U8)START_CHARGE_AUTH == g_sGun_data[GUN_B].sTemp.ucAuth_type)
+	{
+		if (g_sMsg_control.sGun_charge_control.ucStart_id == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+		{
+			//枪id
+			pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+			i++;
+			//鉴权类型
+			pucDst[i] = START_CHARGE_AUTH;
+			i++;
+			//启动类型
+			pucDst[i] = (U8)g_sGun_data[GUN_B].sTemp.eStart_Charge_type;
+			i++;
+			//idtag
+			(void)memcpy(&pucDst[i], g_sGun_data[GUN_B].sTemp.ucIdtag, sizeof(g_sGun_data[GUN_B].sTemp.ucIdtag));
+			i += sizeof(g_sGun_data[GUN_B].sTemp.ucIdtag);
+		}
+	}
+	else if ((U8)STOP_CHARGE_AUTH == g_sGun_data[GUN_B].sTemp.ucAuth_type)//B枪结束
+	{
+		if (g_sMsg_control.sGun_charge_control.ucFinish_id == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+		{
+			//枪id
+			pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+			i++;
+			//鉴权类型
+			pucDst[i] = STOP_CHARGE_AUTH;
+			i++;
+			//结束类型
+			pucDst[i] = (U8)g_sGun_data[GUN_B].sTemp.eStop_Charge_type;
+			i++;
+			//idtag
+			(void)memcpy(&pucDst[i], g_sGun_data[GUN_B].sTemp.ucIdtag, sizeof(g_sGun_data[GUN_B].sTemp.ucIdtag));
+			i += sizeof(g_sGun_data[GUN_B].sTemp.ucIdtag);
+		}
+	}
+	else
+	{
+		//
+	}
+
+	if (i == (C_GUN_AUTH_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩启动充电指令发送0003
+ * @param
+ * @return
+ */
+static void CCU_Send0003(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0003(s_sComm_buff.ucSend_buff);
+
+	MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief 充电桩实时数据报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0004(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_CHARGING_DATA_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+	U16 nTemp = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_CHARGING_DATA_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_CHARGING_DATA_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_CHARGING_DATA_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_CHARGING_DATA_LEN & 0xffU);
+	i++;
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+	i++;
+	//运行状态
+	pucDst[i] = (U8)g_sGun_data[GUN_A].sTemp.eCharge_step;
+	i++;
+	//最高允许电压(同绝缘检测电压)
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unEV_max_imd_vol >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unEV_max_imd_vol & 0xffU);
+	i++;
+	//最高允许电流
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unEV_max_allow_cur >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unEV_max_allow_cur & 0xffU);
+	i++;
+	//绝缘监测标志
+	pucDst[i] = g_sGun_data[GUN_A].sTemp.ucImd_control_flag;
+	i++;
+	//启动soc
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unStart_soc >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unStart_soc & 0xffU);
+	i++;
+	//绝缘监测状态
+	pucDst[i] = g_sGun_data[GUN_A].sTemp.ucImd_status;
+	i++;
+	//预充状态
+	pucDst[i] = g_sGun_data[GUN_A].sTemp.ucPrecharge_status;
+	i++;
+	//DC+温度
+	nTemp = g_sGun_data[GUN_A].nDC_positive_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//DC-温度
+	nTemp = g_sGun_data[GUN_A].nDC_negative_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//订单号
+	(void)memcpy(&pucDst[i], &g_sGun_data[GUN_A].sTemp.uiOrder_id, sizeof(g_sGun_data[GUN_A].sTemp.uiOrder_id));
+	i += 4U;
+	//输出电压
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_A].uiOutput_vol);
+	i += 4U;
+	//输出电流
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_A].uiOutput_cur);
+	i += 4U;
+	//输出功率
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_A].uiOutput_power);
+	i += 4U;
+	//当前电量
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_A].uiCurrent_meter_dn);
+	i += 4U;
+
+	//车端目标电压
+	if (TRUE == g_Test.bTest_flag)//测试使能
+	{
+		pucDst[i] = (U8)(((g_sGun_data[GUN_A].sTemp.unEV_target_vol+g_Test.VolGunA) >> 8) & 0xffU);
+		i++;
+		pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unEV_target_vol+g_Test.VolGunA) & 0xffU);
+		i++;
+	}
+	else
+	{
+		pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unEV_target_vol >> 8) & 0xffU);
+		i++;
+		pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unEV_target_vol & 0xffU);
+		i++;
+	}
+
+	if (STA_START_CHARGE == g_sGun_data[GUN_A].eGun_common_status)
+	{
+		//预充电流
+		if (g_sGun_data[GUN_A].sTemp.unEV_target_cur < 50U)
+		{
+			pucDst[i] = (U8)(((g_sGun_data[GUN_A].sTemp.unEV_target_cur) >> 8U) & 0xffU);
+			i++;
+			pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unEV_target_cur) & 0xffU);
+			i++;
+		}
+		else
+		{
+			pucDst[i] = 0U;
+			i++;
+			pucDst[i] = 0U;
+			i++;
+		}
+	}
+	else
+	{
+		//车端禁止充电，设置电流为0
+		if (FALSE == g_sGun_data[GUN_A].sTemp.bAllow_charge_flag)
+		{
+			pucDst[i] = 0U;
+			i++;
+			pucDst[i] = 0U;
+			i++;
+		}
+		else
+		{
+			//车端目标电流
+			//取枪最大限制电流和车端最大允许电流最小值
+			U16 unMin_cur_A = ((g_sGun_data[GUN_A].sTemp.unEV_max_allow_cur > (g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur*10U))
+					?(g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur*10U):g_sGun_data[GUN_A].sTemp.unEV_max_allow_cur);
+			//高于平台限定功率，限电流
+			if (((U32)g_sGun_data[GUN_A].sTemp.unEV_target_vol/10U * (U32)g_sGun_data[GUN_A].sTemp.unEV_target_cur/10U)
+					> (g_sGun_data[GUN_A].unAdmin_limit_power * 1000U))
+			{
+				U16 unTmp_cur = 0;
+				//0.1A精度
+				unTmp_cur = (U16)((g_sGun_data[GUN_A].unAdmin_limit_power*1000U) / (g_sGun_data[GUN_A].sTemp.unEV_target_vol/10U)*10U);
+
+				//判定需求电流是否高于枪最大输出电流
+				if (unTmp_cur > unMin_cur_A)
+				{
+					unTmp_cur = unMin_cur_A;
+				}
+
+				pucDst[i] = (U8)((unTmp_cur >> 8) & 0xffU);
+				i++;
+				pucDst[i] = (U8)(unTmp_cur & 0xffU);
+				i++;
+			}
+			else
+			{
+				//测试电流
+				if (TRUE == g_Test.bTest_flag)//测试使能
+				{
+					if (0U != g_Test.CurGunA)
+					{
+						pucDst[i] = (U8)(((g_sGun_data[GUN_A].sTemp.unEV_target_cur*2U) >> 8U) & 0xffU);
+						i++;
+						pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unEV_target_cur*2U) & 0xffU);
+						i++;
+					}
+					else
+					{
+						pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_target_cur >> 8U) & 0xffU);
+						i++;
+						pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unEV_target_cur & 0xffU);
+						i++;
+					}
+				}
+				else
+				{
+					//需求电流大于车端最大限制电流/枪限制电流最小值
+					if (g_sGun_data[GUN_A].sTemp.unEV_target_cur > unMin_cur_A)
+					{
+						pucDst[i] = (U8)((unMin_cur_A >> 8U) & 0xffU);
+						i++;
+						pucDst[i] = (U8)(unMin_cur_A & 0xffU);
+						i++;
+					}
+					else//使用车端需求电流
+					{
+						pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unEV_target_cur >> 8U) & 0xffU);
+						i++;
+						pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unEV_target_cur & 0xffU);
+						i++;
+					}
+				}
+			}
+		}
+	}
+	//车端最大限制电压
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unEV_max_limit_vol >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unEV_max_limit_vol & 0xffU);
+	i++;
+
+	//当前soc
+	pucDst[i] = g_sGun_data[GUN_A].sTemp.ucCurrent_soc;
+	i++;
+	//已充电时间
+	pucDst[i] = (U8)(((g_sGun_data[GUN_A].sTemp.unAlready_charge_time/60U) >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unAlready_charge_time/60U) & 0xffU);
+	i++;
+	//剩余充电时间
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unRemain_time >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unRemain_time & 0xffU);
+	i++;
+	//BMS版本号
+	(void)memcpy(&pucDst[i], &g_sGun_data[GUN_A].sTemp.ucBms_version, sizeof(g_sGun_data[GUN_A].sTemp.ucBms_version));
+	i += 3U;
+	//电池类型
+	pucDst[i] = g_sGun_data[GUN_A].sTemp.ucBattery_type;
+	i++;
+	//VIN码
+	(void)memcpy(&pucDst[i], &g_sGun_data[GUN_A].sTemp.ucVin, sizeof(g_sGun_data[GUN_A].sTemp.ucVin));
+	i += 17U;
+	//动力蓄电池总能量
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unBat_total_energy >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unBat_total_energy & 0xffU);
+	i++;
+	//最高允许温度
+	pucDst[i] = (0U == g_sGun_data[GUN_A].sTemp.ucBms_max_allow_temp)?BMS_MSG_TEMP_OFFSET:g_sGun_data[GUN_A].sTemp.ucBms_max_allow_temp;
+	i++;
+	//车辆接口测量电压
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unVehicle_check_vol >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unVehicle_check_vol & 0xffU);
+	i++;
+	//车辆接口测量电流
+	pucDst[i] = (U8)((g_sGun_data[GUN_A].sTemp.unVehicle_check_cur >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_A].sTemp.unVehicle_check_cur & 0xffU);
+	i++;
+	//单体蓄电池最高温度
+	pucDst[i] = (0U == g_sGun_data[GUN_A].sTemp.ucMax_cell_temp)?BMS_MSG_TEMP_OFFSET:g_sGun_data[GUN_A].sTemp.ucMax_cell_temp;
+	i++;
+	//单体蓄电池最低温度
+	pucDst[i] = (0U == g_sGun_data[GUN_A].sTemp.ucMin_cell_temp)?BMS_MSG_TEMP_OFFSET:g_sGun_data[GUN_A].sTemp.ucMin_cell_temp;
+	i++;
+	//充电允许状态
+	pucDst[i] = (U8)g_sGun_data[GUN_A].sTemp.bAllow_charge_flag;
+	i++;
+	//预留
+	i += C_CHARGING_DATA_GUN_RESERVE_LEN;
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+	i++;
+	//运行状态
+	pucDst[i] = (U8)g_sGun_data[GUN_B].sTemp.eCharge_step;
+	i++;
+	//最高允许电压
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_max_imd_vol >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unEV_max_imd_vol & 0xffU);
+	i++;
+	//最高允许电流
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_max_allow_cur >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unEV_max_allow_cur & 0xffU);
+	i++;
+	//绝缘监测标志
+	pucDst[i] = g_sGun_data[GUN_B].sTemp.ucImd_control_flag;
+	i++;
+	//启动soc
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unStart_soc >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unStart_soc & 0xffU);
+	i++;
+	//绝缘监测状态
+	pucDst[i] = g_sGun_data[GUN_B].sTemp.ucImd_status;
+	i++;
+	//预充状态
+	pucDst[i] = g_sGun_data[GUN_B].sTemp.ucPrecharge_status;
+	i++;
+	//DC+温度
+	nTemp = g_sGun_data[GUN_B].nDC_positive_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//DC-温度
+	nTemp = g_sGun_data[GUN_B].nDC_negative_temp+TEMP_OFFSET;
+	pucDst[i] = (U8)(((U16)nTemp >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//订单号
+	(void)memcpy(&pucDst[i], &g_sGun_data[GUN_B].sTemp.uiOrder_id, sizeof(g_sGun_data[GUN_B].sTemp.uiOrder_id));
+	i += 4U;
+	//输出电压
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_B].uiOutput_vol);
+	i += 4U;
+	//输出电流
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_B].uiOutput_cur);
+	i += 4U;
+	//输出功率
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_B].uiOutput_power);
+	i += 4U;
+	//当前电量
+	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_B].uiCurrent_meter_dn);
+	i += 4U;
+	//车端目标电压
+	if (TRUE == g_Test.bTest_flag)//测试使能
+	{
+		pucDst[i] = (U8)(((g_sGun_data[GUN_B].sTemp.unEV_target_vol+g_Test.VolGunB) >> 8U) & 0xffU);
+		i++;
+		pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_target_vol+g_Test.VolGunB) & 0xffU);
+		i++;
+	}
+	else
+	{
+		pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_target_vol >> 8U) & 0xffU);
+		i++;
+		pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unEV_target_vol & 0xffU);
+		i++;
+	}
+
+	if (STA_START_CHARGE == g_sGun_data[GUN_B].eGun_common_status)
+	{
+		//预充电流
+		if (g_sGun_data[GUN_B].sTemp.unEV_target_cur < 50U)
+		{
+			pucDst[i] = (U8)(((g_sGun_data[GUN_B].sTemp.unEV_target_cur) >> 8U) & 0xffU);
+			i++;
+			pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_target_cur) & 0xffU);
+			i++;
+		}
+		else
+		{
+			pucDst[i] = 0U;
+			i++;
+			pucDst[i] = 0U;
+			i++;
+		}
+	}
+	else
+	{
+		//车端禁止充电，设置电流为0
+		if (FALSE == g_sGun_data[GUN_B].sTemp.bAllow_charge_flag)
+		{
+			pucDst[i] = 0U;
+			i++;
+			pucDst[i] = 0U;
+			i++;
+		}
+		else
+		{
+			//取枪最大限制电流和车端最大允许电流最小值
+			U16 unMin_cur_B = ((g_sGun_data[GUN_B].sTemp.unEV_max_allow_cur > (g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur*10U))
+					?(g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur*10U):g_sGun_data[GUN_B].sTemp.unEV_max_allow_cur);
+			//高于平台限定功率
+			if (((U32)g_sGun_data[GUN_B].sTemp.unEV_target_vol/10U * (U32)g_sGun_data[GUN_B].sTemp.unEV_target_cur/10U)
+					> (g_sGun_data[GUN_B].unAdmin_limit_power*1000U))
+			{
+				U16 unTmp_cur = 0;
+				//0.1A精度
+				unTmp_cur = (U16)((g_sGun_data[GUN_B].unAdmin_limit_power*1000U) / (g_sGun_data[GUN_B].sTemp.unEV_target_vol/10U)*10U);
+
+				//判定需求电流是否高于枪最大输出电流
+				if (unTmp_cur > unMin_cur_B)
+				{
+					unTmp_cur = unMin_cur_B;
+				}
+				pucDst[i] = (U8)((unTmp_cur >> 8U) & 0xffU);
+				i++;
+				pucDst[i] = (U8)(unTmp_cur & 0xffU);
+				i++;
+			}
+			else
+			{
+				//车端目标电流
+				if (TRUE == g_Test.bTest_flag)//测试使能
+				{
+					if (0U != g_Test.CurGunB)
+					{
+						pucDst[i] = (U8)(((g_sGun_data[GUN_B].sTemp.unEV_target_cur*g_Test.CurGunB/100U) >> 8U) & 0xffU);
+						i++;
+						pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_target_cur*g_Test.CurGunB/100U) & 0xffU);
+						i++;
+					}
+					else
+					{
+						pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_target_cur >> 8U) & 0xffU);
+						i++;
+						pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unEV_target_cur & 0xffU);
+						i++;
+					}
+				}
+				else
+				{
+					//需求电流高于枪最大输出电流
+					if (g_sGun_data[GUN_B].sTemp.unEV_target_cur > unMin_cur_B)
+					{
+						pucDst[i] = (U8)((unMin_cur_B >> 8U) & 0xffU);
+						i++;
+						pucDst[i] = (U8)(unMin_cur_B & 0xffU);
+						i++;
+					}
+					else
+					{
+						pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_target_cur >> 8U) & 0xffU);
+						i++;
+						pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unEV_target_cur & 0xffU);
+						i++;
+					}
+				}
+			}
+		}
+	}
+	//车端最大限制电压
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unEV_max_limit_vol >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unEV_max_limit_vol & 0xffU);
+	i++;
+	//当前soc
+	pucDst[i] = g_sGun_data[GUN_B].sTemp.ucCurrent_soc;
+	i++;
+	//已充电时间
+	pucDst[i] = (U8)(((g_sGun_data[GUN_B].sTemp.unAlready_charge_time/60U) >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unAlready_charge_time/60U) & 0xffU);
+	i++;
+	//剩余充电时间
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unRemain_time >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unRemain_time & 0xffU);
+	i++;
+	//BMS版本号
+	(void)memcpy(&pucDst[i], &g_sGun_data[GUN_B].sTemp.ucBms_version, sizeof(g_sGun_data[GUN_B].sTemp.ucBms_version));
+	i += 3U;
+	//电池类型
+	pucDst[i] = g_sGun_data[GUN_B].sTemp.ucBattery_type;
+	i++;
+	//VIN码
+	(void)memcpy(&pucDst[i], &g_sGun_data[GUN_B].sTemp.ucVin, sizeof(g_sGun_data[GUN_B].sTemp.ucVin));
+	i += 17U;
+	//动力蓄电池总能量
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unBat_total_energy >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unBat_total_energy & 0xffU);
+	i++;
+	//最高允许温度
+	pucDst[i] = (0U == g_sGun_data[GUN_B].sTemp.ucBms_max_allow_temp)?50U:g_sGun_data[GUN_B].sTemp.ucBms_max_allow_temp;
+	i++;
+	//车辆接口测量电压
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unVehicle_check_vol >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unVehicle_check_vol & 0xffU);
+	i++;
+	//车辆接口测量电流
+	pucDst[i] = (U8)((g_sGun_data[GUN_B].sTemp.unVehicle_check_cur >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sGun_data[GUN_B].sTemp.unVehicle_check_cur & 0xffU);
+	i++;
+	//单体蓄电池最高温度
+	pucDst[i] = (0U == g_sGun_data[GUN_B].sTemp.ucMax_cell_temp)?50U:g_sGun_data[GUN_B].sTemp.ucMax_cell_temp;
+	i++;
+	//单体蓄电池最低温度
+	pucDst[i] = (0U == g_sGun_data[GUN_B].sTemp.ucMin_cell_temp)?50U:g_sGun_data[GUN_B].sTemp.ucMin_cell_temp;
+	i++;
+	//充电允许状态
+	pucDst[i] = (U8)g_sGun_data[GUN_B].sTemp.bAllow_charge_flag;
+	i++;
+	//预留
+	i += C_CHARGING_DATA_GUN_RESERVE_LEN;
+
+	if (i == (C_CHARGING_DATA_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩充电实时数据指令发送0004
+ * @param
+ * @return
+ */
+static void CCU_Send0004(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0004(s_sComm_buff.ucSend_buff);
+
+	MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	if (TRUE != TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length))
+	{
+		my_printf(USER_ERROR, "%s:%d tcp send 0004 error\n", __FILE__, __LINE__);
+	}
+}
+
+/**
+ * @brief 绝缘监测模块报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0005(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_IMD_DATA_LEN + MSGBODY_OFFSET);
+	CHECK_PTR_NULL(g_psIMD_data);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_IMD_DATA_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_IMD_DATA_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_IMD_DATA_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_IMD_DATA_LEN & 0xffU);
+	i++;
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+	i++;
+	//通讯状态
+	if (0U != g_sGun_fault[GUN_A].sGeneral_fault.sItem.imd_comm_lost)
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	//软件版本
+	(void)memcpy(&pucDst[i], g_sGun_data[GUN_A].ucImd_version, sizeof(g_sGun_data[GUN_A].ucImd_version));
+	i+=sizeof(g_sGun_data[GUN_A].ucImd_version);
+	//正极绝缘对地阻值
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_A].unPositive_R >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_A].unPositive_R & 0xffU);
+	i++;
+	//负极绝缘对地阻值
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_A].unNegative_R >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_A].unNegative_R & 0xffU);
+	i++;
+	//正极电压
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_A].unPositive_Vol >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_A].unPositive_Vol & 0xffU);
+	i++;
+	//负极电压
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_A].unNegative_Vol >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_A].unNegative_Vol & 0xffU);
+	i++;
+	//母线电压
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_A].unBus_vol >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_A].unBus_vol & 0xffU);
+	i++;
+	//绝缘监测模式
+	pucDst[i] = g_psIMD_data->ucImd_mode[GUN_A];
+	i++;
+	//预留
+	i += C_IMD_DATA_GUN_RESERVE_LEN;
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+	i++;
+	//通讯状态
+	if (0U != g_sGun_fault[GUN_B].sGeneral_fault.sItem.imd_comm_lost)
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	//软件版本
+	(void)memcpy(&pucDst[i], g_sGun_data[GUN_B].ucImd_version, sizeof(g_sGun_data[GUN_B].ucImd_version));
+	i+=sizeof(g_sGun_data[GUN_B].ucImd_version);
+	//正极绝缘对地阻值
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_B].unPositive_R >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_B].unPositive_R & 0xffU);
+	i++;
+	//负极绝缘对地阻值
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_B].unNegative_R >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_B].unNegative_R & 0xffU);
+	i++;
+	//正极电压
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_B].unPositive_Vol >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_B].unPositive_Vol & 0xffU);
+	i++;
+	//负极电压
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_B].unNegative_Vol >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_B].unNegative_Vol & 0xffU);
+	i++;
+	//母线电压
+	pucDst[i] = (U8)((g_psIMD_data->sPublic_data[GUN_B].unBus_vol >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_psIMD_data->sPublic_data[GUN_B].unBus_vol & 0xffU);
+	i++;
+	//绝缘监测模式
+	pucDst[i] = g_psIMD_data->ucImd_mode[GUN_B];
+	i++;
+	//预留
+	i += C_IMD_DATA_GUN_RESERVE_LEN;
+
+	if (i == (C_IMD_DATA_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩绝缘模块指令发送0005
+ * @param
+ * @return
+ */
+static void CCU_Send0005(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0005(s_sComm_buff.ucSend_buff);
+
+	//MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief 电表模块报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0006(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_METER_DATA_LEN + MSGBODY_OFFSET);
+	CHECK_PTR_NULL(g_psMeter_data);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_METER_DATA_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_METER_DATA_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_METER_DATA_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_METER_DATA_LEN & 0xffU);
+	i++;
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+	i++;
+	//通讯状态
+	if (0U != g_sGun_fault[GUN_A].sGeneral_fault.sItem.meter_comm_lost)
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	//软件版本
+	(void)memcpy(&pucDst[i], g_sGun_data[GUN_A].ucMeter_version, sizeof(g_sGun_data[GUN_A].ucMeter_version));
+	i+=sizeof(g_sGun_data[GUN_A].ucMeter_version);
+	//电压
+	Int2Bigendian(&pucDst[i], g_psMeter_data->sPublic_data[GUN_A].uiDc_vol);
+	i += 4U;
+	//电流
+	Int2Bigendian(&pucDst[i], g_psMeter_data->sPublic_data[GUN_A].uiDc_cur);
+	i += 4U;
+	//电量
+	Int2Bigendian(&pucDst[i], g_psMeter_data->sPublic_data[GUN_A].uiPos_act_dn);
+	i += 4U;
+	//功率
+	Int2Bigendian(&pucDst[i], g_psMeter_data->sPublic_data[GUN_A].uiDc_pwr);
+	i += 4U;
+	//预留
+	i += C_METER_DATA_GUN_RESERVE_LEN;
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+	i++;
+	//通讯状态
+	if (0U != g_sGun_fault[GUN_B].sGeneral_fault.sItem.meter_comm_lost)
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	//软件版本
+	(void)memcpy(&pucDst[i], g_sGun_data[GUN_B].ucMeter_version, sizeof(g_sGun_data[GUN_B].ucMeter_version));
+	i+=sizeof(g_sGun_data[GUN_B].ucMeter_version);
+	//电压
+	Int2Bigendian(&pucDst[i], g_psMeter_data->sPublic_data[GUN_B].uiDc_vol);
+	i += 4U;
+	//电流
+	Int2Bigendian(&pucDst[i], g_psMeter_data->sPublic_data[GUN_B].uiDc_cur);
+	i += 4U;
+	//电量
+	Int2Bigendian(&pucDst[i], g_psMeter_data->sPublic_data[GUN_B].uiPos_act_dn);
+	i += 4U;
+	//功率
+	Int2Bigendian(&pucDst[i], g_psMeter_data->sPublic_data[GUN_B].uiDc_pwr);
+	i += 4U;
+	//预留
+	i += C_METER_DATA_GUN_RESERVE_LEN;
+
+	if (i == (C_METER_DATA_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩电表模块数据指令0006
+ * @param
+ * @return
+ */
+static void CCU_Send0006(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+	s_sComm_buff.uiSend_length = CCU_Data0006(s_sComm_buff.ucSend_buff);
+
+	//MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief pos机模块报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0007(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_POS_DATA_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+	S32 iTemp = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_POS_DATA_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_POS_DATA_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_POS_DATA_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_POS_DATA_LEN & 0xffU);
+	i++;
+
+	(void)GetSigVal(ALARM_ID_POS_COMM_LOST_ALARM, &iTemp);
+
+	//通讯状态
+	if (COMM_LOST != iTemp)
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+	//POS机软件版本
+	(void)memcpy(&pucDst[i], g_sPile_data.ucPos_version, sizeof(g_sPile_data.ucPos_version));
+	i+=sizeof(g_sPile_data.ucPos_version);
+
+	i+=C_POS_DATA_RESERVE_LEN;
+
+	if (i == (C_POS_DATA_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩pos机模块数据上报0007
+ * @param
+ * @return
+ */
+static void CCU_Send0007(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0007(s_sComm_buff.ucSend_buff);
+
+	//MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief 刷卡模块报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0008(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_RFID_DATA_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+	S32 iTemp = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_RFID_DATA_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_RFID_DATA_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_RFID_DATA_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_RFID_DATA_LEN & 0xffU);
+	i++;
+
+	(void)GetSigVal(ALARM_ID_RFID_COMM_LOST_ALARM, &iTemp);
+	//通讯状态
+	if (COMM_LOST != iTemp)
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+	//RFID软件版本
+	(void)memcpy(&pucDst[i], g_sPile_data.ucRfid_version, sizeof(g_sPile_data.ucRfid_version));
+	i+=sizeof(g_sPile_data.ucRfid_version);
+
+	i+=C_RFID_DATA_RESERVE_LEN;
+
+	if (i == (C_RFID_DATA_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩刷卡板模块数据上传0008
+ * @param
+ * @return
+ */
+static void CCU_Send0008(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0008(s_sComm_buff.ucSend_buff);
+
+	//MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief hmi模块报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0009(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_HMI_DATA_LEN + MSGBODY_OFFSET);
+	CHECK_PTR_NULL(g_psHMI_data);
+
+	U32 i = 0;
+	S32 iTemp = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_HMI_DATA_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_HMI_DATA_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_HMI_DATA_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_HMI_DATA_LEN & 0xffU);
+	i++;
+
+	(void)GetSigVal(ALARM_ID_HMI_COMM_LOST_ALARM, &iTemp);
+	//通讯状态
+	if (COMM_LOST != iTemp)
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+	//HMI软件版本
+	(void)memcpy(&pucDst[i], g_sPile_data.ucHmi_version, sizeof(g_sPile_data.ucHmi_version));
+	i+=sizeof(g_sPile_data.ucHmi_version);
+
+	U16 unTemp = g_cTemperatureHMI[0];
+	pucDst[i] = (U8)((unTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(unTemp & 0xffU);
+	i++;
+
+	unTemp = g_cTemperatureHMI[1];
+	pucDst[i] = (U8)((unTemp >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(unTemp & 0xffU);
+	i++;
+
+	i+=C_HMI_DATA_RESERVE_LEN;
+
+	if (i == (C_HMI_DATA_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩hmi模块数据上传0009
+ * @param
+ * @return
+ */
+static void CCU_Send0009(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0009(s_sComm_buff.ucSend_buff);
+
+	//MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief secc模块报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0010(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_SECC_DATA_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_SECC_DATA_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_SECC_DATA_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_SECC_DATA_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_SECC_DATA_LEN & 0xffU);
+	i++;
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+	i++;
+	//通讯状态
+	if (0U != g_sGun_fault[GUN_A].sGeneral_fault.sItem.secc_comm_lost)
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	//secc软件版本
+	(void)memcpy(&pucDst[i], g_sGun_data[GUN_A].ucSecc_version, sizeof(g_sGun_data[GUN_A].ucSecc_version));
+	i+=sizeof(g_sGun_data[GUN_A].ucSecc_version);
+	//预留
+	i+=C_SECC_DATA_GUN_RESERVE_LEN;
+
+
+	//枪id
+	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+	i++;
+	//通讯状态
+	if (0U != g_sGun_fault[GUN_B].sGeneral_fault.sItem.secc_comm_lost)
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	//secc软件版本
+	(void)memcpy(&pucDst[i], g_sGun_data[GUN_B].ucSecc_version, sizeof(g_sGun_data[GUN_B].ucSecc_version));
+	i+=sizeof(g_sGun_data[GUN_B].ucSecc_version);
+	//预留
+	i+=C_SECC_DATA_GUN_RESERVE_LEN;
+
+	if (i == (C_SECC_DATA_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩SECC模块数据上传0010
+ * @param
+ * @return
+ */
+static void CCU_Send0010(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0010(s_sComm_buff.ucSend_buff);
+
+	//MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief 停止充电报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0011(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_STOP_CHARGE_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_STOP_CHARGE_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_STOP_CHARGE_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_STOP_CHARGE_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_STOP_CHARGE_LEN & 0xffU);
+	i++;
+
+	if (g_sMsg_control.sGun_charge_control.ucFinish_id == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+	{
+		//枪id
+		pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+		i++;
+		//订单号
+		(void)memcpy(&pucDst[i], &g_sGun_data[GUN_A].sTemp.uiOrder_id, sizeof(g_sGun_data[GUN_A].sTemp.uiOrder_id));
+		i += sizeof(g_sGun_data[GUN_A].sTemp.uiOrder_id);
+		//结束方式
+		pucDst[i] = (U8)g_sGun_data[GUN_A].sTemp.eStop_Charge_type;
+		i++;
+
+		if (NULL != g_sTcp_semaphores.tcp_alarm_read_mutex)
+		{
+			if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_alarm_read_mutex, portMAX_DELAY))
+			{
+				//桩失败原因
+				(void)memcpy(&pucDst[i], &g_sAlarm_control.sPile_alarm_buff.sPile_fault, sizeof(g_sAlarm_control.sPile_alarm_buff.sPile_fault));
+				i+=PILE_DEVICE_LEN;
+				//枪失败原因
+				(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault));
+				i+=GUN_ERROR_DEVICE_LEN;
+				(void)xSemaphoreGive(g_sTcp_semaphores.tcp_alarm_read_mutex);
+			}
+		}
+		//预留
+		i+=C_STOP_CHARGE_RESERVE_LEN;
+	}
+	else if (g_sMsg_control.sGun_charge_control.ucFinish_id == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+	{
+		//枪id
+		pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+		i++;
+		//订单号
+		(void)memcpy(&pucDst[i], &g_sGun_data[GUN_B].sTemp.uiOrder_id, sizeof(g_sGun_data[GUN_B].sTemp.uiOrder_id));
+		i += sizeof(g_sGun_data[GUN_B].sTemp.uiOrder_id);
+		//结束方式
+		pucDst[i] = (U8)g_sGun_data[GUN_B].sTemp.eStop_Charge_type;
+		i++;
+
+		if (NULL != g_sTcp_semaphores.tcp_alarm_read_mutex)
+		{
+			if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_alarm_read_mutex, portMAX_DELAY))
+			{
+				//桩失败原因
+				(void)memcpy(&pucDst[i], &g_sAlarm_control.sPile_alarm_buff.sPile_fault, sizeof(g_sAlarm_control.sPile_alarm_buff.sPile_fault));
+				i+=PILE_DEVICE_LEN;
+				//枪失败原因
+				(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault));
+				i+=GUN_ERROR_DEVICE_LEN;
+				(void)xSemaphoreGive(g_sTcp_semaphores.tcp_alarm_read_mutex);
+			}
+		}
+		//预留
+		i+=C_STOP_CHARGE_RESERVE_LEN;
+	}
+	else
+	{
+		my_printf(USER_ERROR, "%s:%d ucFinish_id error = %d\n", __FILE__, __LINE__, g_sMsg_control.sGun_charge_control.ucFinish_id);
+	}
+
+	if (i == (C_STOP_CHARGE_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩结束充电请求报文发送0011
+ * @param
+ * @return
+ */
+static void CCU_Send0011(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0011(s_sComm_buff.ucSend_buff);
+
+	MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief CCU日志报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0014(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, g_sMsg_control.sCCU_log_control.uiLog_len + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_CCU_LOG_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_CCU_LOG_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)((g_sMsg_control.sCCU_log_control.uiLog_len >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(g_sMsg_control.sCCU_log_control.uiLog_len & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], g_sMsg_control.sCCU_log_control.ucLog_data, g_sMsg_control.sCCU_log_control.uiLog_len);
+	i+=g_sMsg_control.sCCU_log_control.uiLog_len;
+
+	if (i == (g_sMsg_control.sCCU_log_control.uiLog_len + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	return 0;
+}
+
+/**
+ * @brief 充电桩日志上报0014
+ * @param
+ * @return
+ */
+static void CCU_Send0014(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+	s_sComm_buff.uiSend_length = CCU_Data0014(s_sComm_buff.ucSend_buff);
+
+	MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief 设模块汇总数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+//static U32 CCU_Data0013(U8 *pucDst)
+//{
+//	CHECK_PTR_NULL(pucDst);
+//	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_RFID_DATA_LEN + MSGBODY_OFFSET);
+//
+//	U32 i = 0;
+//
+//	pucDst[i] = HEAD_NUM_H;
+//	pucDst[i] = HEAD_NUM_L;
+//	pucDst[i] = g_sStorage_data.ucPile_num;
+//	pucDst[i] = (((U16)C_EXTERNAL_DEVICE_DATA >> 8) & 0xffU);
+//	pucDst[i] = (C_EXTERNAL_DEVICE_DATA & 0xffU);
+//
+//	if (s_sLocal_state.unMessageId >= 65000)
+//	{
+//		s_sLocal_state.unMessageId = 1;
+//	}
+//	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+//	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+//	s_sLocal_state.unMessageId++;
+//
+//	pucDst[i] = (U8)((C_EXTERNAL_DEVICE_DATA_LEN >> 8) & 0xffU);
+//	pucDst[i] = (U8)(C_EXTERNAL_DEVICE_DATA_LEN & 0xffU);
+//
+//	//hmi软件版本
+//	(void)memcpy(pucDst+i, g_sPile_data.ucHmi_version, sizeof(g_sPile_data.ucHmi_version));
+//	i+=sizeof(g_sPile_data.ucHmi_version);
+//	//预留
+//	i+=C_EXTERNAL_DEVICE_DATA_RESERVE_LEN;
+//	//pos机软件版本
+//	(void)memcpy(pucDst+i, g_sPile_data.ucPos_version, sizeof(g_sPile_data.ucPos_version));
+//	i+=sizeof(g_sPile_data.ucPos_version);
+//	//预留
+//	i+=C_EXTERNAL_DEVICE_DATA_RESERVE_LEN;
+//	//rfid软件版本
+//	(void)memcpy(pucDst+i, g_sPile_data.ucRfid_version, sizeof(g_sPile_data.ucRfid_version));
+//	i+=sizeof(g_sPile_data.ucRfid_version);
+//	//预留
+//	i+=C_EXTERNAL_DEVICE_DATA_RESERVE_LEN;
+//
+//	//枪id
+//	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+//	//IMD软件版本
+//	(void)memcpy(pucDst+i, g_sGun_data[GUN_A].ucImd_version, sizeof(g_sGun_data[GUN_A].ucImd_version));
+//	i+=sizeof(g_sGun_data[GUN_A].ucImd_version);
+//	//预留
+//	i+=C_EXTERNAL_DEVICE_DATA_RESERVE_LEN;
+//	//meter软件版本
+//	(void)memcpy(pucDst+i, g_sGun_data[GUN_A].ucMeter_version, sizeof(g_sGun_data[GUN_A].ucMeter_version));
+//	i+=sizeof(g_sGun_data[GUN_A].ucMeter_version);
+//	//预留
+//	i+=C_EXTERNAL_DEVICE_DATA_RESERVE_LEN;
+//	//secc软件版本
+//	(void)memcpy(pucDst+i, g_sGun_data[GUN_A].ucSecc_version, sizeof(g_sGun_data[GUN_A].ucSecc_version));
+//	i+=sizeof(g_sGun_data[GUN_A].ucSecc_version);
+//	//预留
+//	i+=C_EXTERNAL_DEVICE_DATA_RESERVE_LEN;
+//
+//	//枪id
+//	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+//	//IMD软件版本
+//	(void)memcpy(pucDst+i, g_sGun_data[GUN_B].ucImd_version, sizeof(g_sGun_data[GUN_B].ucImd_version));
+//	i+=sizeof(g_sGun_data[GUN_B].ucImd_version);
+//	//预留
+//	i+=C_EXTERNAL_DEVICE_DATA_RESERVE_LEN;
+//	//meter软件版本
+//	(void)memcpy(pucDst+i, g_sGun_data[GUN_B].ucMeter_version, sizeof(g_sGun_data[GUN_B].ucMeter_version));
+//	i+=sizeof(g_sGun_data[GUN_B].ucMeter_version);
+//	//预留
+//	i+=C_EXTERNAL_DEVICE_DATA_RESERVE_LEN;
+//	//secc软件版本
+//	(void)memcpy(pucDst+i, g_sGun_data[GUN_B].ucSecc_version, sizeof(g_sGun_data[GUN_B].ucSecc_version));
+//	i+=sizeof(g_sGun_data[GUN_B].ucSecc_version);
+//	//预留
+//	i+=C_EXTERNAL_DEVICE_DATA_RESERVE_LEN;
+//
+//	if (i == (C_RFID_DATA_LEN + MSGBODY_OFFSET))
+//	{
+//		return i;
+//	}
+//
+//  my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+//	return 0;
+//}
+
+/**
+ * @brief: 充电桩外设模块汇总数据上传0013
+ * @param ： NULL
+ */
+//static U32 CCU_Send0013(void)
+//{
+//	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+//
+//	s_sComm_buff.uiSend_length = CCU_Data0013(s_sComm_buff.ucSend_buff);
+//
+//	MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+//
+//	if (-1 != sockfd)
+//	{
+//		if (s_sComm_buff.uiSend_length == send(sockfd, s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length, 0))
+//		{
+//			//发送成功
+//		}
+//		else
+//		{
+//			//发送失败
+//		}
+//	}
+//}
+
+/**
+ * @brief CIG小板报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data0016(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_CIG_DATA_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+	S16 nTemp = 0;
+	S32 iTemp = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = (((U16)C_CIG_DATA_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_CIG_DATA_CMD & 0xffU);
+	i++;
+
+	if (s_sLocal_state.unMessageId >= 65000U)
+	{
+		s_sLocal_state.unMessageId = 1;
+	}
+	pucDst[i] = (U8)((s_sLocal_state.unMessageId >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(s_sLocal_state.unMessageId & 0xffU);
+	i++;
+	s_sLocal_state.unMessageId++;
+
+	pucDst[i] = (U8)(((U16)C_CIG_DATA_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_CIG_DATA_LEN & 0xffU);
+	i++;
+
+	(void)GetSigVal(ALARM_ID_CIG_COMM_LOST_ERROR, &iTemp);
+	//通讯状态
+	if (COMM_LOST != iTemp)
+	{
+		pucDst[i] = DEVICE_COMM_CONNECT;
+		i++;
+	}
+	else
+	{
+		pucDst[i] = DEVICE_COMM_DISCONNECT;
+		i++;
+	}
+
+	//CIG软件版本
+	(void)memcpy(&pucDst[i], g_sPile_data.ucCig_soft_version, sizeof(g_sPile_data.ucCig_soft_version));
+	i+=sizeof(g_sPile_data.ucCig_soft_version);
+	//CIG硬件版本
+	(void)memcpy(&pucDst[i], g_sPile_data.ucCig_hardware, sizeof(g_sPile_data.ucCig_hardware));
+	i+=sizeof(g_sPile_data.ucCig_hardware);
+	//CIG SN
+	(void)memcpy(&pucDst[i], g_sPile_data.ucCig_SN, sizeof(g_sPile_data.ucCig_SN));
+	i+=sizeof(g_sPile_data.ucCig_SN);
+	//PCB温度1
+	nTemp = g_sPile_data.unCig_temp1/10U;
+	pucDst[i] = (U8)(((U16)nTemp >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+	//PCB温度2
+	nTemp = g_sPile_data.unCig_temp2/10U;
+	pucDst[i] = (U8)(((U16)nTemp >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (U8)((U16)nTemp & 0xffU);
+	i++;
+
+	//预留
+	i+=C_CIG_DATA_RESERVE_LEN;
+
+	if (i == (C_CIG_DATA_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩CIG小板数据上传0016
+ * @param
+ * @return
+ */
+static void CCU_Send0016(void)
+{
+	(void)memset(s_sComm_buff.ucSend_buff, 0, sizeof(s_sComm_buff.ucSend_buff));
+
+	s_sComm_buff.uiSend_length = CCU_Data0016(s_sComm_buff.ucSend_buff);
+
+	//MessageDebug(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+
+	(void)TcpSend(s_sComm_buff.ucSend_buff, s_sComm_buff.uiSend_length);
+}
+
+/**
+ * @brief 解析平台响应CCU登录包应答8001
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody8001(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_LOGIN_IN_ANS_LEN);
+
+	U32 ucTimestamp = 0;
+
+	(void)memcpy(&ucTimestamp, &pcSrc[1], 4);
+	ucTimestamp = BigEndianToLittleEndian(ucTimestamp) + TIMESTAMP_OFFSET;
+	//同步rtc
+	my_printf(USER_INFO, "server timestamp = %d\n", ucTimestamp);
+	SYS_SetTimestamp(&ucTimestamp);
+}
+
+/**
+ * @brief 解析平台响应CCU状态包应答8002
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody8002(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_GUN_STATUS_DATA_ANS_LEN);
+
+	U32 ucTimestamp = 0;
+
+	(void)memcpy(&ucTimestamp, &pcSrc[1], 4);
+	ucTimestamp = BigEndianToLittleEndian(ucTimestamp) + TIMESTAMP_OFFSET;;
+	//同步rtc
+	SYS_SetTimestamp(&ucTimestamp);
+}
+
+/**
+ * @brief 解析平台响应CCU鉴权报文应答8003
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody8003(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_GUN_AUTH_ANS_LEN);
+
+	if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+	{
+		//鉴权成功
+		if (TRUE == pcSrc[1])
+		{
+			if ((U8)START_CHARGE_AUTH == g_sGun_data[GUN_A].sTemp.ucAuth_type)
+			{
+				//告知HMI
+				if (NULL != g_psHMI_data)
+				{
+					g_psHMI_data->ucAuthorize_flag[GUN_A] = AUTHORIZE_SUCCESS;
+				}
+				g_sGun_data[GUN_A].sTemp.ucAuth_type = IDLE_AUTH;
+				my_printf(USER_INFO, "GUN_A receive start auth response success\n");
+			}
+			else if ((U8)STOP_CHARGE_AUTH == g_sGun_data[GUN_A].sTemp.ucAuth_type)
+			{
+				g_sMsg_control.sGun_charge_control.ucFinish_id = pcSrc[0];
+				//告知HMI
+				if (NULL != g_psHMI_data)
+				{
+					g_psHMI_data->ucAuthorize_flag[GUN_A] = AUTHORIZE_SUCCESS;
+				}
+				g_sGun_data[GUN_A].sTemp.ucAuth_type = IDLE_AUTH;
+				//停止充电
+				StopChargeControl(GUN_A);
+				my_printf(USER_INFO, "GUN_A receive stop auth response success\n");
+			}
+			else
+			{
+				my_printf(USER_ERROR, "%s:%d GUN_A auth response type error\n", __FILE__, __LINE__);
+			}
+		}
+		else//鉴权失败
+		{
+			g_sGun_data[GUN_A].sTemp.ucAuth_type = IDLE_AUTH;
+			//告知HMI
+			if (NULL != g_psHMI_data)
+			{
+				g_psHMI_data->ucAuthorize_flag[GUN_A] = AUTHORIZE_FAILED;
+			}
+			my_printf(USER_ERROR, "%s:%d GUN_A receive auth response failed\n", __FILE__, __LINE__);
+		}
+		g_sMsg_control.sGun_charge_control.ucStart_id = 0;
+	}
+	else if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+	{
+		//鉴权成功
+		if (TRUE == pcSrc[1])
+		{
+			if ((U8)START_CHARGE_AUTH == g_sGun_data[GUN_B].sTemp.ucAuth_type)
+			{
+				//告知HMI
+				if (NULL != g_psHMI_data)
+				{
+					g_psHMI_data->ucAuthorize_flag[GUN_B] = AUTHORIZE_SUCCESS;
+				}
+				g_sGun_data[GUN_B].sTemp.ucAuth_type = IDLE_AUTH;
+				my_printf(USER_INFO, "GUN_B receive start auth response success\n");
+			}
+			else if ((U8)STOP_CHARGE_AUTH == g_sGun_data[GUN_B].sTemp.ucAuth_type)
+			{
+				g_sMsg_control.sGun_charge_control.ucFinish_id = pcSrc[0];
+				//告知HMI
+				if (NULL != g_psHMI_data)
+				{
+					g_psHMI_data->ucAuthorize_flag[GUN_B] = AUTHORIZE_SUCCESS;
+				}
+				g_sGun_data[GUN_B].sTemp.ucAuth_type = IDLE_AUTH;
+				//停止充电
+				StopChargeControl(GUN_B);
+				my_printf(USER_INFO, "GUN_B receive stop auth response success\n");
+			}
+			else
+			{
+				my_printf(USER_ERROR, "%s:%d GUN_B auth response type error\n", __FILE__, __LINE__);
+			}
+		}
+		else//鉴权失败
+		{
+			g_sGun_data[GUN_B].sTemp.ucAuth_type = IDLE_AUTH;
+			//告知HMI
+			if (NULL != g_psHMI_data)
+			{
+				g_psHMI_data->ucAuthorize_flag[GUN_B] = AUTHORIZE_FAILED;
+			}
+			my_printf(USER_ERROR, "%s:%d GUN_B receive auth response failed\n", __FILE__, __LINE__);
+		}
+		g_sMsg_control.sGun_charge_control.ucStart_id = 0;
+	}
+	else
+	{
+		my_printf(USER_INFO, "auth gun id error %d\n", pcSrc[0]);
+	}
+}
+
+/**
+ * @brief 解析平台响应CCU结束充电账单报文8012
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+//static void AnalysisMsgbody8012(U16 unMsg_len, char *pcSrc)
+//{
+//	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+//
+//	if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+//	{
+//		(void)memset(&g_sGun_data[GUN_A].sTemp, 0, sizeof(g_sGun_data[GUN_A].sTemp));
+//		g_sMsg_control.sGun_charge_control.ucFinish_id = 0;
+//	}
+//	else if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+//	{
+//		(void)memset(&g_sGun_data[GUN_B].sTemp, 0, sizeof(g_sGun_data[GUN_B].sTemp));
+//		g_sMsg_control.sGun_charge_control.ucFinish_id = 0;
+//	}
+//	else
+//	{
+//		my_printf(USER_INFO, "WARNING:gun id error %d\n", pcSrc[0]);
+//	}
+//}
+
+static void AnalysisMsgbody0015(U16 unMsg_len, const U8 *pcSrc)
+{
+	for (U8 i = 0; i < 2U; i++)
+	{
+		if((SendMessageIdAndGunId[i][1] == pcSrc[5]) && (SendMessageIdAndGunId[i][2] == pcSrc[6]))
+		{
+			g_SeccUpgrade_CommBuf[i].u16RecvDataCnt = unMsg_len + 9U;
+			(void)memcpy(g_SeccUpgrade_CommBuf[i].u8Recvbuf,pcSrc,g_SeccUpgrade_CommBuf[i].u16RecvDataCnt);
+			if((TRUE == blSeccCheckReadLogMsg(i)) && (NULL != SECC_BinarySemaphore[i].SeccReadLog_Binary_Semaphore))
+			{
+				(void)xSemaphoreGive(SECC_BinarySemaphore[i].SeccReadLog_Binary_Semaphore);
+			}
+		}
+	}
+}
+
+/**
+ * @brief 充电启动响应报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @param bFlag：成功or失败
+ * @return 报文数据长度
+ */
+static U32 CCU_Data8020(U8 *pucDst, BOOL bFlag)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_SERVERSTART_CHARGE_ANS_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = ((C_SERVERSTART_CHARGE_ANS_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_SERVERSTART_CHARGE_ANS_CMD & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+
+	pucDst[i] = (((U16)C_SERVERSTART_CHARGE_ANS_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_SERVERSTART_CHARGE_ANS_LEN & 0xffU);
+	i++;
+
+	pucDst[i] = (U8)bFlag;
+	i++;
+	if (i == (C_SERVERSTART_CHARGE_ANS_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩响应平台启动充电报文8020
+ * @param bFlag：成功or失败
+ * @return
+ */
+static void CCU_Send8020(BOOL bFlag)
+{
+	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+
+	s_sComm_buff.uiResponse_length = CCU_Data8020(s_sComm_buff.ucResponse_buff, bFlag);
+
+	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+
+	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+}
+
+/**
+ * @brief 处理充电启动请求
+ * @param eGun_id 枪索引
+ * @param charge_price_sig 充电价格信号ID
+ * @param occupation_fee_sig 占用费信号ID
+ * @param pParseData 解析后的数据结构体
+ */
+static void HandleStartCharge(const Gun_Id_e eGun_id, U32 charge_price_sig, U32 occupation_fee_sig, const Parse_0020_t* pParseData)
+{
+    if (NULL == pParseData)
+    {
+        my_printf(USER_ERROR, "HandleStartCharge: invalid pParseData (NULL pointer)");
+        CCU_Send8020(FALSE);
+
+        return;
+    }
+
+    if (STA_PLUGING != g_sGun_data[eGun_id].eGun_common_status)
+    {
+        CCU_Send8020(FALSE);
+        my_printf(USER_INFO, "%s The current status doesn't support start charging: common_status = %d\n",
+                 (eGun_id == GUN_A) ? "GUN_A" : "GUN_B", g_sGun_data[eGun_id].eGun_common_status);
+
+        return;
+    }
+
+    if (pParseData->ucAuth_status != (U8)AUTH_SUCCESS)
+    {
+        my_printf(USER_INFO, "%s start auth failed\n", (eGun_id == GUN_A) ? "GUN_A" : "GUN_B");
+
+        return;
+    }
+
+    //清空历史金额
+    (void)SetSigVal(charge_price_sig, 0);
+    (void)SetSigVal(occupation_fee_sig, 0);
+
+    //记录启动数据
+    g_sGun_data[eGun_id].sTemp.uiStart_time = xTaskGetTickCount();
+    CHECK_PTR_NULL_NO_RETURN(g_psMeter_data);
+    g_sGun_data[eGun_id].sTemp.uiStart_meter_dn = g_sGun_data[eGun_id].uiCurrent_meter_dn;
+
+    //更新枪状态
+    GunStatusChange(eGun_id, STA_START_CHARGE, FALSE, FALSE);
+    vTaskDelay(100); // 确保状态变更报文早于响应报文
+
+    CCU_Send8020(TRUE);
+
+    g_sMsg_control.sGun_charge_control.ucStart_id = pParseData->eGun_id;
+    (void)memcpy(&g_sGun_data[eGun_id].sTemp.uiOrder_id, &pParseData->ucOrder[0], sizeof(g_sGun_data[eGun_id].sTemp.uiOrder_id));
+    g_sGun_data[eGun_id].sTemp.eStart_Charge_type = (Start_Charge_Type_e)pParseData->ucStart_type;
+
+    my_printf(USER_INFO, "%s uiOrder_id = %u charge_type = %d\n",(eGun_id == GUN_A) ? "GUN_A" : "GUN_B",
+             g_sGun_data[eGun_id].sTemp.uiOrder_id, g_sGun_data[eGun_id].sTemp.eStart_Charge_type);
+
+    //启动充电+上传实时数据
+    StartChargeControl(eGun_id);
+    TcpSendControl(&g_sMsg_control.sCharging_control.bSend_charging_data_flag);
+    g_sMsg_control.sCharging_control.bCharging_timeup_flag = TRUE;
+}
+
+/**
+ * @brief 平台启动充电解析指令0020
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0020(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_SERVERSTART_CHARGE_LEN);
+
+	Parse_0020_t sParse_0020 = {0};
+	memcpy(&sParse_0020, &pcSrc[0], sizeof(sParse_0020));
+
+	if (sParse_0020.eGun_id == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+	{
+	    HandleStartCharge(GUN_A, CCU_SAM_SIG_ID_CHARGE_PRICE_A, CCU_SAM_SIG_ID_OCCUPATION_FEE_A, &sParse_0020);
+	}
+	else if (sParse_0020.eGun_id == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+	{
+	    HandleStartCharge(GUN_B, CCU_SAM_SIG_ID_CHARGE_PRICE_B, CCU_SAM_SIG_ID_OCCUPATION_FEE_B, &sParse_0020);
+	}
+	else
+	{
+		//回复启动失败
+		CCU_Send8020(FALSE);
+		my_printf(USER_INFO, "receive 0020 server start charge id error: %d GUN_A=%d GUN_B=%d\n", pcSrc[0],
+				g_sStorage_data.sPublic_data[GUN_A].eGun_id, g_sStorage_data.sPublic_data[GUN_B].eGun_id);
+	}
+}
+
+/**
+ * @brief 充电停止响应报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data8021(U8 *pucDst, BOOL bFlag)
+{
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_SERVERSTOP_CHARGE_ANS_LEN + MSGBODY_OFFSET);
+	CHECK_PTR_NULL(pucDst);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = ((C_SERVERSTOP_CHARGE_ANS_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_SERVERSTOP_CHARGE_ANS_CMD & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+
+	pucDst[i] = (((U16)C_SERVERSTOP_CHARGE_ANS_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_SERVERSTOP_CHARGE_ANS_LEN & 0xffU);
+	i++;
+
+	pucDst[i] = (U8)bFlag;
+	i++;
+
+	if (i == (C_SERVERSTOP_CHARGE_ANS_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩响应平台停止充电报文8021
+ * @param
+ * @return
+ */
+static void CCU_Send8021(BOOL bFlag)
+{
+	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+
+	s_sComm_buff.uiResponse_length = CCU_Data8021(s_sComm_buff.ucResponse_buff, bFlag);
+
+	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+
+	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+}
+
+/**
+ * @brief 处理平台停充指令0021的单枪逻辑
+ * @param eGun_id 枪索引
+ * @param pcSrc 原始数据指针
+ */
+static void HandleStopCharge(const Gun_Id_e eGun_id, const U8* pcSrc)
+{
+    //仅充电中状态允许停充
+    if (STA_CHARGING == g_sGun_data[eGun_id].eGun_common_status)
+    {
+        g_sMsg_control.sGun_charge_control.ucFinish_id = pcSrc[0];
+        g_sGun_data[eGun_id].sTemp.eStop_Charge_type = pcSrc[1];
+        StopChargeControl(eGun_id);
+        CCU_Send8021(TRUE);
+    }
+    else
+    {
+        CCU_Send8021(FALSE);
+        my_printf(USER_ERROR, "%s:%d %s current state does not allow stopping charging = %d\n", __FILE__, __LINE__,
+                 (eGun_id == GUN_A) ? "GUN_A" : "GUN_B", g_sGun_data[eGun_id].eGun_common_status);
+    }
+}
+
+/**
+ * @brief 平台停止充电解析指令0021
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0021(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_SERVERSTOP_CHARGE_LEN);
+
+	if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+	{
+		HandleStopCharge(GUN_A, pcSrc);
+	}
+	else if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+	{
+		HandleStopCharge(GUN_B, pcSrc);
+	}
+	else
+	{
+		CCU_Send8021(FALSE);
+		my_printf(USER_ERROR, "%s:%d receive 0021 server stop charge id error = %d\n", __FILE__, __LINE__, pcSrc[0]);
+	}
+}
+
+/**
+ * @brief 充电预约响应报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @param bFlag:控制命令响应状态
+ * @return 报文数据长度
+ */
+static U32 CCU_Data8022(U8 *pucDst, BOOL bFlag)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_BOOK_CHARGE_ANS_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = ((C_BOOK_CHARGE_ANS_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_BOOK_CHARGE_ANS_CMD & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+
+	pucDst[i] = (((U16)C_BOOK_CHARGE_ANS_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_BOOK_CHARGE_ANS_LEN & 0xffU);
+	i++;
+
+	pucDst[i] = (U8)bFlag;
+	i++;
+
+	if (i == (C_BOOK_CHARGE_ANS_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩响应平台预约充电报文8022
+ * @param bFlag:控制命令响应状态
+ * @return
+ */
+static void CCU_Send8022(BOOL bFlag)
+{
+	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+
+	s_sComm_buff.uiResponse_length = CCU_Data8022(s_sComm_buff.ucResponse_buff, bFlag);
+
+	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+
+	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+}
+
+/**
+ * @brief 处理平台预约指令0022的单枪逻辑
+ * @param eGun_id 枪索引
+ * @param pcSrc 原始数据指针
+ */
+static void HandleBookCharge(const Gun_Id_e eGun_id, const U8* pcSrc)
+{
+    switch (pcSrc[1])
+    {
+        case START_BOOK: // 开始预约
+            // 仅空闲状态允许预约
+            if (STA_IDLE == g_sGun_data[eGun_id].eGun_common_status)
+            {
+                CCU_Send8022(TRUE);
+                GunStatusChange(eGun_id, STA_BOOK, FALSE, FALSE);
+                my_printf(USER_INFO, "%s receive server control:start book\n", (eGun_id == GUN_A) ? "GUN_A" : "GUN_B");
+            }
+            break;
+
+        case CANCEL_BOOK: // 取消预约
+            // 仅预约状态允许取消
+            if (STA_BOOK == g_sGun_data[eGun_id].eGun_common_status)
+            {
+                CCU_Send8022(TRUE);
+                GunStatusChange(eGun_id, STA_IDLE, FALSE, TRUE);
+                my_printf(USER_INFO, "%s receive server control:cancel book\n", (eGun_id == GUN_A) ? "GUN_A" : "GUN_B");
+            }
+            break;
+
+        default: // 无效预约类型
+            CCU_Send8022(FALSE);
+            my_printf(USER_ERROR, "%s:%d %s server control book type error\n", __FILE__, __LINE__,
+                     (eGun_id == GUN_A) ? "GUN_A" : "GUN_B");
+            break;
+    }
+}
+
+/**
+ * @brief 平台预约充电解析指令0022
+ * @param unMsg_len 数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0022(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_BOOK_CHARGE_LEN);
+
+	if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+	{
+		HandleBookCharge(GUN_A, pcSrc);
+	}
+	else if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+	{
+		HandleBookCharge(GUN_B, pcSrc);
+	}
+	else
+	{
+		CCU_Send8022(FALSE);
+		my_printf(USER_INFO, "server control 0022 book id error %d\n", pcSrc[0]);
+	}
+}
+
+/**
+ * @brief 平台扣款报文报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data8024(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_AMOUNT_ANS_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = ((C_AMOUNT_ANS_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_AMOUNT_ANS_CMD & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+
+	pucDst[i] = (((U16)C_AMOUNT_ANS_LEN >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (C_AMOUNT_ANS_LEN & 0xffU);
+	i++;
+
+	pucDst[i] = (U8)TRUE;
+	i++;
+
+	if (i == (C_AMOUNT_ANS_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩响应平台扣款报文8024
+ * @param
+ * @return
+ */
+static void CCU_Send8024(void)
+{
+	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+
+	s_sComm_buff.uiResponse_length = CCU_Data8024(s_sComm_buff.ucResponse_buff);
+
+	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+
+	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+}
+
+/**
+ * @brief 解析平台下发扣款指令0024
+ * @param unMsg_len 数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0024(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_AMOUNT_CMD_LEN);
+
+	if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+	{
+
+	}
+	else if (pcSrc[0] == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+	{
+
+	}
+	else
+	{
+		my_printf(USER_INFO, "server control 0024 amount id error %d\n", pcSrc[0]);
+	}
+
+	CCU_Send8024();
+}
+
+/**
+ * @brief 平台桩控制指令响应报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @param bFlag:响应状态位
+ * @return 报文数据长度
+ */
+static U32 CCU_Data8025(U8 *pucDst, BOOL bFlag)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_CHARGEPOINT_CONTROL_ANS_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = ((C_GUN_CONTROL_ANS_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_GUN_CONTROL_ANS_CMD & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+
+	pucDst[i] = (((U16)C_CHARGEPOINT_CONTROL_ANS_LEN >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (C_CHARGEPOINT_CONTROL_ANS_LEN & 0xffU);
+	i++;
+
+	pucDst[i] = (U8)bFlag;
+	i++;
+
+	if (i == (C_CHARGEPOINT_CONTROL_ANS_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩响应平台桩控制指令报文8025
+ * @param bFlag:响应状态位
+ * @return
+ */
+static void CCU_Send8025(BOOL bFlag)
+{
+	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+
+	s_sComm_buff.uiResponse_length = CCU_Data8025(s_sComm_buff.ucResponse_buff, bFlag);
+
+	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+
+	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+}
+
+/**
+ * @brief 平台下发桩控制解析指令0025
+ * @param unMsg_len:数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0025(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_GUN_CONTROL_LEN);
+
+	Gun_Control_Parse_t sGun_control_parse = {0};
+	(void)memcpy(&sGun_control_parse, pcSrc, S_GUN_CONTROL_LEN);
+
+	CCU_Send8025(TRUE);
+
+	if (sGun_control_parse.bReboot_flag)//重启
+	{
+		if ((FALSE == CheckChargingStatus(GUN_A)) && (FALSE == CheckChargingStatus(GUN_B)))
+		{
+			my_printf(USER_INFO, "receive PCU reboot CMD\n");
+			//重启POS
+			if (NULL != g_psPOS_data)
+			{
+				g_psPOS_data->Reboot();
+			}
+			//重启HMI
+			if (NULL != g_psHMI_data)
+			{
+				g_psHMI_data->bRestore_flag = TRUE;
+			}
+			//重启CIG
+			g_sCig_write_control.bReset_flag = TRUE;
+
+			TcpClose();
+
+			vTaskDelay(1500);
+			SystemResetFunc();
+		}
+		else
+		{
+			my_printf(USER_INFO, "The current state does't allow restarting GUN_A:common_status = %d GUN_B common_status = %d\n",
+					g_sGun_data[GUN_A].eGun_common_status, g_sGun_data[GUN_B].eGun_common_status);
+		}
+	}
+
+	//DEBUG_MODE->RELEASE_MODE 重启
+	if (DEBUG_MODE == g_sPile_data.ucPile_config_mode)
+	{
+		if (RELEASE_MODE == sGun_control_parse.ucPile_config_mode)
+		{
+			my_printf(USER_INFO, "DEBUG_MODE->RELEASE_MODE reboot\n");
+
+			TcpClose();
+
+			vTaskDelay(1000);
+			SystemResetFunc();
+		}
+	}
+	else
+	{
+		g_sPile_data.ucPile_config_mode = sGun_control_parse.ucPile_config_mode;
+	}
+
+	//调试模式关闭原led逻辑
+	if (DEBUG_MODE == g_sPile_data.ucPile_config_mode)
+	{
+	    if (NULL != LEDA_TASK_Handler)
+	    {
+	    	vTaskSuspend(LEDA_TASK_Handler);
+	    }
+	    if (NULL != LEDB_TASK_Handler)
+	    {
+	    	vTaskSuspend(LEDB_TASK_Handler);
+	    }
+	}
+
+	//DI监测状态控制
+	g_sPile_data.bSPD_enable_flag = sGun_control_parse.bSPD_enable_flag;
+	g_sPile_data.bDoor_enable_flag = sGun_control_parse.bDoor_enable_flag;
+	g_sPile_data.bWater_enable_flag = sGun_control_parse.bWater_enable_flag;
+	g_sPile_data.bHit_enable_flag = sGun_control_parse.bHit_enable_flag;
+	g_sPile_data.bMCB_enable_flag = sGun_control_parse.bMCB_enable_flag;
+
+	//枪功率限制
+	g_sGun_data[GUN_A].unAdmin_limit_power = Short2Smallendian(sGun_control_parse.unAdmin_limit_power_A);
+	g_sGun_data[GUN_B].unAdmin_limit_power = Short2Smallendian(sGun_control_parse.unAdmin_limit_power_B);
+
+	my_printf(USER_INFO, "receive server control: mode = %d spd = %d door = %d water = %d hit = %d MCB = %d (0:disable 1:enable)\n",
+			sGun_control_parse.ucPile_config_mode, sGun_control_parse.bSPD_enable_flag, sGun_control_parse.bDoor_enable_flag,
+			sGun_control_parse.bWater_enable_flag, sGun_control_parse.bHit_enable_flag, sGun_control_parse.bMCB_enable_flag);
+	my_printf(USER_INFO, "GUN_A limit power = %dKW GUN_B limit power = %dKW\n", g_sGun_data[GUN_A].unAdmin_limit_power, g_sGun_data[GUN_B].unAdmin_limit_power);
+
+	//枪禁用/使能控制
+	if (GUN_DISABLE_STATUS == g_sGun_data[GUN_A].ucGun_disable_status)
+	{
+		if (GUN_ENABLE_STATUS == sGun_control_parse.ucGun_disable_status_A)
+		{
+			my_printf(USER_INFO, "PCU control GUN_A enable status\n");
+			GunStatusChange(GUN_A, STA_IDLE, TRUE, FALSE);
+		}
+	}
+	else
+	{
+		if (GUN_DISABLE_STATUS == sGun_control_parse.ucGun_disable_status_A)
+		{
+			my_printf(USER_INFO, "PCU control GUN_A disable status\n");
+			GunStatusChange(GUN_A, STA_UNAVAILABLE, FALSE, FALSE);
+		}
+	}
+	//同步A枪状态
+	g_sGun_data[GUN_A].ucGun_disable_status = sGun_control_parse.ucGun_disable_status_A;
+
+	//枪禁用/使能控制
+	if (GUN_DISABLE_STATUS == g_sGun_data[GUN_B].ucGun_disable_status)
+	{
+		if (GUN_ENABLE_STATUS == sGun_control_parse.ucGun_disable_status_B)
+		{
+			my_printf(USER_INFO, "PCU control GUN_B enable status\n");
+			GunStatusChange(GUN_B, STA_IDLE, TRUE, FALSE);
+		}
+	}
+	else
+	{
+		if (GUN_DISABLE_STATUS == sGun_control_parse.ucGun_disable_status_B)
+		{
+			my_printf(USER_INFO, "PCU control GUN_B disable status\n");
+			GunStatusChange(GUN_B, STA_UNAVAILABLE, FALSE, FALSE);
+		}
+	}
+	//同步B枪状态
+	g_sGun_data[GUN_B].ucGun_disable_status = sGun_control_parse.ucGun_disable_status_B;
+}
+
+/**
+ * @brief 平台参数配置响应报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @param bFlag:响应状态位
+ * @return 报文数据长度
+ */
+static U32 CCU_Data8026(U8 *pucDst, BOOL bFlag)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_SERVER_CONFIG_ANS_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = ((C_SET_GUN_PARAM_ANS_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_SET_GUN_PARAM_ANS_CMD & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+
+	pucDst[i] = (((U16)C_SERVER_CONFIG_ANS_LEN >> 8U) & 0xffU);
+	i++;
+	pucDst[i] = (C_SERVER_CONFIG_ANS_LEN & 0xffU);
+	i++;
+
+	pucDst[i] = (U8)bFlag;
+	i++;
+
+	if (i == (C_SERVER_CONFIG_ANS_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩响应服务器配置桩参数
+ * @param bFlag:响应状态位
+ * @return
+ */
+static void CCU_Send8026(BOOL bFlag)
+{
+	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+
+	s_sComm_buff.uiResponse_length = CCU_Data8026(s_sComm_buff.ucResponse_buff, bFlag);
+
+	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+
+	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+}
+
+/**
+ * @brief 平台下发桩参数设置解析指令0026
+ * @param unMsg_len:数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0026(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_SET_GUN_PARAM_LEN);
+
+	BOOL bReboot_flag = FALSE;
+
+	//充电状态不允许配置
+	if ((TRUE == CheckChargingStatus(GUN_A)) || (TRUE == CheckChargingStatus(GUN_B)))
+	{
+		CCU_Send8026(FALSE);
+		my_printf(USER_INFO, "current status not allow config GUN_A=%d GUN_B=%d\n", g_sGun_data[GUN_A].eGun_common_status,
+				g_sGun_data[GUN_B].eGun_common_status);
+		return ;
+	}
+
+	CCU_Send8026(TRUE);
+
+	(void)memcpy(&g_sStorage_data, pcSrc, S_SET_GUN_PARAM_LEN);
+
+	bReboot_flag = CheckConfigMsg();
+
+	//charge_id配置
+	S32 iTemp = 0;
+	(void)memcpy(&iTemp, g_sStorage_data.ucCharge_id, sizeof(iTemp));
+	(void)SetSigVal(CCU_SET_SIG_ID_CHARGE_ID_1_2_3_4, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucCharge_id[4], sizeof(iTemp));
+	(void)SetSigVal(CCU_SET_SIG_ID_CHARGE_ID_5_6_7_8, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucCharge_id[8], sizeof(iTemp));
+	(void)SetSigVal(CCU_SET_SIG_ID_CHARGE_ID_9_10_11_12, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucCharge_id[12], sizeof(iTemp));
+	(void)SetSigVal(CCU_SET_SIG_ID_CHARGE_ID_13_14_15_16, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucCharge_id[16], sizeof(iTemp));
+	(void)SetSigVal(CCU_SET_SIG_ID_CHARGE_ID_17_18_19_20, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucCharge_id[20], sizeof(iTemp));
+	(void)SetSigVal(CCU_SET_SIG_ID_CHARGE_ID_21_22_23_24, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucCharge_id[24], sizeof(iTemp));
+	(void)SetSigVal(CCU_SET_SIG_ID_CHARGE_ID_25_26_27_28, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucCharge_id[28], sizeof(iTemp));
+	(void)SetSigVal(CCU_SET_SIG_ID_CHARGE_ID_29_30_31_32, iTemp);
+	EepromDelay();
+
+	//桩级配置
+	(void)SetSigVal(CCU_SET_SIG_ID_ENABLE_LOCAL_BILL, (S32)g_sStorage_data.bLocal_bill_flag);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_USE_SCREEN_FLAG, (S32)g_sStorage_data.bUse_ad_screen);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_HMI_MODEL, (S32)g_sStorage_data.ucHMI_model);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_USE_POS_FLAG, (S32)g_sStorage_data.bUse_ad_pos);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_POS_MODEL, (S32)g_sStorage_data.ucPOS_model);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_USE_RFID_FLAG, (S32)g_sStorage_data.bUse_ad_rfid);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_RFID_MODEL, (S32)g_sStorage_data.ucRFID_model);
+	EepromDelay();
+	//RFID卡配置
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_KEY_MODE_FIRST, (S32)g_sStorage_data.ucM1_key_mode_first);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_SECTOR_FIRST, (S32)g_sStorage_data.ucM1_sector_first);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_BLOCK_FIRST, (S32)g_sStorage_data.ucM1_block_first);
+	EepromDelay();
+	(void)memcpy(&iTemp, g_sStorage_data.ucM1_password_first, 4);
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_FIRST_1_2_3_4, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucM1_password_first[4], 4);
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_FIRST_5_6_7_8, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucM1_password_first[8], 4);
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_FIRST_9_10_11_12, iTemp);
+	EepromDelay();
+
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_KEY_MODE_SECOND, (S32)g_sStorage_data.ucM1_key_mode_second);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_SECTOR_SECOND, (S32)g_sStorage_data.ucM1_sector_second);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_BLOCK_SECOND, (S32)g_sStorage_data.ucM1_block_second);
+	EepromDelay();
+	(void)memcpy(&iTemp, g_sStorage_data.ucM1_password_first, 4);
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_SECOND_1_2_3_4, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucM1_password_first[4], 4);
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_SECOND_5_6_7_8, iTemp);
+	EepromDelay();
+	(void)memcpy(&iTemp, &g_sStorage_data.ucM1_password_first[8], 4);
+	(void)SetSigVal(CCU_SET_SIG_ID_M1_PASSWORD_SECOND_9_10_11_12, iTemp);
+	EepromDelay();
+
+	//CC1电压配置
+	g_sStorage_data.unCC1_12V_max = (((g_sStorage_data.unCC1_12V_max & 0xFF00U) >> 8) | ((g_sStorage_data.unCC1_12V_max & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_CC1_12V_MAX, (S32)g_sStorage_data.unCC1_12V_max);
+	EepromDelay();
+	g_sStorage_data.unCC1_12V_min = (((g_sStorage_data.unCC1_12V_min & 0xFF00U) >> 8) | ((g_sStorage_data.unCC1_12V_min & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_CC1_12V_MIN, (S32)g_sStorage_data.unCC1_12V_min);
+	EepromDelay();
+	g_sStorage_data.unCC1_6V_max = (((g_sStorage_data.unCC1_6V_max & 0xFF00U) >> 8) | ((g_sStorage_data.unCC1_6V_max & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_CC1_6V_MAX, (S32)g_sStorage_data.unCC1_6V_max);
+	EepromDelay();
+	g_sStorage_data.unCC1_6V_min = (((g_sStorage_data.unCC1_6V_min & 0xFF00U) >> 8) | ((g_sStorage_data.unCC1_6V_min & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_CC1_6V_MIN, (S32)g_sStorage_data.unCC1_6V_min);
+	EepromDelay();
+	g_sStorage_data.unCC1_4V_max = (((g_sStorage_data.unCC1_4V_max & 0xFF00U) >> 8) | ((g_sStorage_data.unCC1_4V_max & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_CC1_4V_MAX, (S32)g_sStorage_data.unCC1_4V_max);
+	EepromDelay();
+	g_sStorage_data.unCC1_4V_min = (((g_sStorage_data.unCC1_4V_min & 0xFF00U) >> 8) | ((g_sStorage_data.unCC1_4V_min & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_CC1_4V_MIN, (S32)g_sStorage_data.unCC1_4V_min);
+	EepromDelay();
+	//照明灯相关
+	(void)SetSigVal(CCU_SET_SIG_ID_LIGHT_ON_TIME, (S32)g_sStorage_data.ucLight_on_time);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_LIGHT_OFF_TIME, (S32)g_sStorage_data.ucLight_off_time);
+	EepromDelay();
+
+	//A枪相关配置
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_TYPE_A, (S32)g_sStorage_data.sPublic_data[GUN_A].ucGun_type);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_ID_A, (S32)g_sStorage_data.sPublic_data[GUN_A].eGun_id);
+	EepromDelay();
+
+	g_sStorage_data.sPublic_data[GUN_A].unGun_max_vol = (((g_sStorage_data.sPublic_data[GUN_A].unGun_max_vol & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_A].unGun_max_vol & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_MAX_OUTPUT_VOL_A, (S32)g_sStorage_data.sPublic_data[GUN_A].unGun_max_vol);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_A].unGun_min_vol = (((g_sStorage_data.sPublic_data[GUN_A].unGun_min_vol & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_A].unGun_min_vol & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_MIN_OUTPUT_VOL_A, (S32)g_sStorage_data.sPublic_data[GUN_A].unGun_min_vol);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur = (((g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_MAX_OUTPUT_CUR_A, (S32)g_sStorage_data.sPublic_data[GUN_A].unGun_max_cur);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_A].unGun_min_cur = (((g_sStorage_data.sPublic_data[GUN_A].unGun_min_cur & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_A].unGun_min_cur & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_MIN_OUTPUT_CUR_A, (S32)g_sStorage_data.sPublic_data[GUN_A].unGun_min_cur);
+	EepromDelay();
+
+	(void)SetSigVal(CCU_SET_SIG_ID_METER_MODEL_A, (S32)g_sStorage_data.sPublic_data[GUN_A].ucMeter_model);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_SECC_MODEL_A, (S32)g_sStorage_data.sPublic_data[GUN_A].ucSECC_model);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_IMD_MODEL_A, (S32)g_sStorage_data.sPublic_data[GUN_A].ucIMD_model);
+	EepromDelay();
+
+	//枪温配置
+	g_sStorage_data.sPublic_data[GUN_A].unGun_warn_temp = ((((g_sStorage_data.sPublic_data[GUN_A].unGun_warn_temp & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_A].unGun_warn_temp & 0xFFU) << 8)) - TEMP_OFFSET);
+	(void)SetSigVal(CCU_SET_SIG_ID_WARN_TEMP_A, (S32)g_sStorage_data.sPublic_data[GUN_A].unGun_warn_temp);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_A].unGun_fault_temp = ((((g_sStorage_data.sPublic_data[GUN_A].unGun_fault_temp & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_A].unGun_fault_temp & 0xFFU) << 8)) - TEMP_OFFSET);
+	(void)SetSigVal(CCU_SET_SIG_ID_FAULT_TEMP_A, (S32)g_sStorage_data.sPublic_data[GUN_A].unGun_fault_temp);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_A].unGun_diff_temp = ((((g_sStorage_data.sPublic_data[GUN_A].unGun_diff_temp & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_A].unGun_diff_temp & 0xFFU) << 8)) - TEMP_OFFSET);
+	(void)SetSigVal(CCU_SET_SIG_ID_DIFF_TEMP_A, (S32)g_sStorage_data.sPublic_data[GUN_A].unGun_diff_temp);
+	EepromDelay();
+
+	//B枪相关配置
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_TYPE_B, (S32)g_sStorage_data.sPublic_data[GUN_B].ucGun_type);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_ID_B, (S32)g_sStorage_data.sPublic_data[GUN_B].eGun_id);
+	EepromDelay();
+
+	g_sStorage_data.sPublic_data[GUN_B].unGun_max_vol = (((g_sStorage_data.sPublic_data[GUN_B].unGun_max_vol & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_B].unGun_max_vol & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_MAX_OUTPUT_VOL_B, (S32)g_sStorage_data.sPublic_data[GUN_B].unGun_max_vol);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_B].unGun_min_vol = (((g_sStorage_data.sPublic_data[GUN_B].unGun_min_vol & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_B].unGun_min_vol & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_MIN_OUTPUT_VOL_B, (S32)g_sStorage_data.sPublic_data[GUN_B].unGun_min_vol);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur = (((g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_MAX_OUTPUT_CUR_B, (S32)g_sStorage_data.sPublic_data[GUN_B].unGun_max_cur);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_B].unGun_min_cur = (((g_sStorage_data.sPublic_data[GUN_B].unGun_min_cur & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_B].unGun_min_cur & 0xFFU) << 8));
+	(void)SetSigVal(CCU_SET_SIG_ID_GUN_MIN_OUTPUT_CUR_B, (S32)g_sStorage_data.sPublic_data[GUN_B].unGun_min_cur);
+	EepromDelay();
+
+	(void)SetSigVal(CCU_SET_SIG_ID_METER_MODEL_B, (S32)g_sStorage_data.sPublic_data[GUN_B].ucMeter_model);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_SECC_MODEL_B, (S32)g_sStorage_data.sPublic_data[GUN_B].ucSECC_model);
+	EepromDelay();
+	(void)SetSigVal(CCU_SET_SIG_ID_IMD_MODEL_B, (S32)g_sStorage_data.sPublic_data[GUN_B].ucIMD_model);
+	EepromDelay();
+
+	//枪温配置
+	g_sStorage_data.sPublic_data[GUN_B].unGun_warn_temp = ((((g_sStorage_data.sPublic_data[GUN_B].unGun_warn_temp & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_B].unGun_warn_temp & 0xFFU) << 8)) - TEMP_OFFSET);
+	(void)SetSigVal(CCU_SET_SIG_ID_WARN_TEMP_B, (S32)g_sStorage_data.sPublic_data[GUN_B].unGun_warn_temp);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_B].unGun_fault_temp = ((((g_sStorage_data.sPublic_data[GUN_B].unGun_fault_temp & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_B].unGun_fault_temp & 0xFFU) << 8)) - TEMP_OFFSET);
+	(void)SetSigVal(CCU_SET_SIG_ID_FAULT_TEMP_B, (S32)g_sStorage_data.sPublic_data[GUN_B].unGun_fault_temp);
+	EepromDelay();
+	g_sStorage_data.sPublic_data[GUN_B].unGun_diff_temp = ((((g_sStorage_data.sPublic_data[GUN_B].unGun_diff_temp & 0xFF00U) >> 8) | ((g_sStorage_data.sPublic_data[GUN_B].unGun_diff_temp & 0xFFU) << 8)) - TEMP_OFFSET);
+	(void)SetSigVal(CCU_SET_SIG_ID_DIFF_TEMP_B, (S32)g_sStorage_data.sPublic_data[GUN_B].unGun_diff_temp);
+	EepromDelay();
+
+	//置位平台配置报文
+	(void)SetSigVal(CCU_SET_SIG_ID_FLAG, (S32)TRUE);
+	EepromDelay();
+
+	my_printf(USER_INFO, "0026 receive server config\n");
+	if (TRUE == bReboot_flag)
+	{
+		TcpClose();
+		if (NULL != g_psHMI_data)
+		{
+			g_psHMI_data->bRestore_flag = TRUE;
+		}
+		vTaskDelay(1000);
+		SystemResetFunc();
+	}
+}
+
+/**
+ * @brief 桩状态响应报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+//static U32 CCU_Data8027(U8 *pucDst)
+//{
+//	CHECK_PTR_NULL(pucDst);
+//	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_SERVER_QUERY_STATUS_ANS_LEN + MSGBODY_OFFSET);
+//
+//	U32 i = 0;
+//
+//	pucDst[i] = HEAD_NUM_H;
+//	i++;
+//	pucDst[i] = HEAD_NUM_L;
+//	i++;
+//	pucDst[i] = g_sStorage_data.ucPile_num;
+//	i++;
+//	pucDst[i] = ((C_SERVER_QUERY_STATUS_ANS_CMD >> 8) & 0xffU);
+//	i++;
+//	pucDst[i] = (C_SERVER_QUERY_STATUS_ANS_CMD & 0xffU);
+//	i++;
+//
+//	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+//	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+//
+//	pucDst[i] = ((C_SERVER_QUERY_STATUS_ANS_LEN >> 8) & 0xffU);
+//	i++;
+//	pucDst[i] = (C_SERVER_QUERY_STATUS_ANS_LEN & 0xffU);
+//	i++;
+//
+//	//日志模式
+//	pucDst[i] = g_sPile_data.ucPile_config_mode;
+//	i++;
+//	//防雷
+//	pucDst[i] = g_sPile_data.bSPD_enable_flag;
+//	i++;
+//	pucDst[i] = g_sPile_data.bSPD_io_status;
+//	i++;
+//	//门禁
+//	pucDst[i] = g_sPile_data.bDoor_enable_flag;
+//	i++;
+//	pucDst[i] = g_sPile_data.bDoor_io_status;
+//	i++;
+//	//水浸
+//	pucDst[i] = g_sPile_data.bWater_enable_flag;
+//	i++;
+//	pucDst[i] = g_sPile_data.bWater_io_status;
+//	i++;
+//	//撞击
+//	pucDst[i] = g_sPile_data.bHit_enable_flag;
+//	i++;
+//	pucDst[i] = g_sPile_data.bHit_io_status;
+//	i++;
+//	//塑壳
+//	pucDst[i] = g_sPile_data.bMCB_enable_flag;
+//	i++;
+//	pucDst[i] = g_sPile_data.bMCB_io_status;
+//	i++;
+//	//急停
+//	pucDst[i] = g_sPile_data.bEstop_io_status;
+//	i++;
+//
+//	//故障/告警所属区域,bit位表示
+//	pucDst[i] = s_sLocal_state.ucAlarm_flag;
+//	i++;
+//
+//	if (NULL != g_sTcp_semaphores.tcp_alarm_read_mutex)
+//	{
+//		if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_alarm_read_mutex, portMAX_DELAY))
+//		{
+//			//桩告警
+//			(void)memcpy(&pucDst[i], &g_sAlarm_control.sPile_alarm_buff.sPile_warn, sizeof(g_sAlarm_control.sPile_alarm_buff.sPile_warn));
+//			i+=PILE_DEVICE_LEN;
+//			//桩故障
+//			(void)memcpy(&pucDst[i], &g_sAlarm_control.sPile_alarm_buff.sPile_fault, sizeof(g_sAlarm_control.sPile_alarm_buff.sPile_fault));
+//			i+=PILE_DEVICE_LEN;
+//			(void)xSemaphoreGive(g_sTcp_semaphores.tcp_alarm_read_mutex);
+//		}
+//	}
+//
+//	//预留
+//	i += C_SERVER_QUERY_STATUS_ANS_PILE_RESERVE_LEN;
+//
+//	//枪id
+//	pucDst[i] = g_sStorage_data.sPublic_data[GUN_A].eGun_id;
+//	i++;
+//	//当前电表读数
+//	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_A].uiCurrent_meter_dn);
+//	i += sizeof(g_sGun_data[GUN_A].uiCurrent_meter_dn);
+//	//枪普通状态
+//	pucDst[i] = (U8)g_sGun_data[GUN_A].eGun_common_status;
+//	i++;
+//	//枪禁用状态
+//	pucDst[i] = g_sGun_data[GUN_A].ucGun_disable_status;
+//	i++;
+//	//cp状态
+//	pucDst[i] = g_sGun_data[GUN_A].eConnect_status;
+//	i++;
+//	//DC+温度
+//	pucDst[i] = (U8)(((U32)(g_sGun_data[GUN_A].nDC_positive_temp+TEMP_OFFSET) >> 8U) & 0xffU);
+//	i++;
+//	pucDst[i] = (U8)((U32)(g_sGun_data[GUN_A].nDC_positive_temp+TEMP_OFFSET) & 0xffU);
+//	i++;
+//	//DC-温度
+//	pucDst[i] = (U8)(((U32)(g_sGun_data[GUN_A].nDC_negative_temp+TEMP_OFFSET) >> 8U) & 0xffU);
+//	i++;
+//	pucDst[i] = (U8)((U32)(g_sGun_data[GUN_A].nDC_negative_temp+TEMP_OFFSET) & 0xffU);
+//	i++;
+//	//回枪监测
+//	pucDst[i] = g_sGun_data[GUN_A].bGun_return_flag;
+//	i++;
+//	//预充继电器状态
+//	pucDst[i] = g_sGun_data[GUN_A].bPrecharge_relay_status;
+//	i++;
+//	//主回路DC+状态
+//	pucDst[i] = g_sGun_data[GUN_A].bPositive_relay_status;
+//	i++;
+//	//主回路DC-状态
+//	pucDst[i] = g_sGun_data[GUN_A].bNegative_relay_status;
+//	i++;
+//	//DC+反馈
+//	pucDst[i] = g_sGun_data[GUN_A].bPositive_relay_feedback_status;
+//	i++;
+//	//DC-反馈
+//	pucDst[i] = g_sGun_data[GUN_A].bNegative_relay_feedback_status;
+//	i++;
+//	//熔断器状态
+//	pucDst[i] = g_sGun_data[GUN_A].bFuse_io_status;
+//	i++;
+//	//平台限制最大功率
+//	pucDst[i] = ((g_sGun_data[GUN_A].unAdmin_limit_power >> 8) & 0xff);
+//	i++;
+//	pucDst[i] = (g_sGun_data[GUN_A].unAdmin_limit_power & 0xff);
+//	i++;
+//
+//	if (NULL != g_sTcp_semaphores.tcp_alarm_read_mutex)
+//	{
+//		if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_alarm_read_mutex, portMAX_DELAY))
+//		{
+//			//枪告警
+//			(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_warn, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_warn));
+//			i+=GUN_WARN_DEVICE_LEN;
+//			//枪故障
+//			(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault));
+//			i+=GUN_ERROR_DEVICE_LEN;
+//			(void)xSemaphoreGive(g_sTcp_semaphores.tcp_alarm_read_mutex);
+//		}
+//	}
+//	//预留
+//	i += C_SERVER_QUERY_STATUS_ANS_GUN_RESERVE_LEN;
+//
+//	//枪id
+//	pucDst[i] = g_sStorage_data.sPublic_data[GUN_B].eGun_id;
+//	i++;
+//	//当前电表读数
+//	Int2Bigendian(&pucDst[i], g_sGun_data[GUN_B].uiCurrent_meter_dn);
+//	i += sizeof(g_sGun_data[GUN_B].uiCurrent_meter_dn);
+//	//枪普通状态
+//	pucDst[i] = (U8)g_sGun_data[GUN_B].eGun_common_status;
+//	i++;
+//	//枪禁用状态
+//	pucDst[i] = g_sGun_data[GUN_B].ucGun_disable_status;
+//	i++;
+//	//cp状态
+//	pucDst[i] = g_sGun_data[GUN_B].eConnect_status;
+//	i++;
+//	//DC+温度
+//	pucDst[i] = (((g_sGun_data[GUN_B].nDC_positive_temp+TEMP_OFFSET) >> 8) & 0xffU);
+//	i++;
+//	pucDst[i] = ((g_sGun_data[GUN_B].nDC_positive_temp+TEMP_OFFSET) & 0xffU);
+//	i++;
+//	//DC-温度
+//	pucDst[i] = (((g_sGun_data[GUN_B].nDC_negative_temp+TEMP_OFFSET) >> 8) & 0xffU);
+//	i++;
+//	pucDst[i] = ((g_sGun_data[GUN_B].nDC_negative_temp+TEMP_OFFSET) & 0xffU);
+//	i++;
+//	//回枪监测
+//	pucDst[i] = g_sGun_data[GUN_B].bGun_return_flag;
+//	i++;
+//	//预充继电器状态
+//	pucDst[i] = g_sGun_data[GUN_B].bPrecharge_relay_status;
+//	i++;
+//	//主回路DC+状态
+//	pucDst[i] = g_sGun_data[GUN_B].bPositive_relay_status;
+//	i++;
+//	//主回路DC-状态
+//	pucDst[i] = g_sGun_data[GUN_B].bNegative_relay_status;
+//	i++;
+//	//DC+反馈
+//	pucDst[i] = g_sGun_data[GUN_B].bPositive_relay_feedback_status;
+//	i++;
+//	//DC-反馈
+//	pucDst[i] = g_sGun_data[GUN_B].bNegative_relay_feedback_status;
+//	i++;
+//	//熔断器状态
+//	pucDst[i] = g_sGun_data[GUN_B].bFuse_io_status;
+//	i++;
+//	//平台限制最大功率
+//	pucDst[i] = ((g_sGun_data[GUN_B].unAdmin_limit_power >> 8) & 0xff);
+//	i++;
+//	pucDst[i] = (g_sGun_data[GUN_B].unAdmin_limit_power & 0xffU);
+//	i++;
+//	if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_alarm_read_mutex, portMAX_DELAY))
+//	{
+//		//枪告警
+//		(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_warn, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_warn));
+//		i+=GUN_WARN_DEVICE_LEN;
+//		//枪故障
+//		(void)memcpy(&pucDst[i], &g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault));
+//		i+=GUN_ERROR_DEVICE_LEN;
+//		(void)xSemaphoreGive(g_sTcp_semaphores.tcp_alarm_read_mutex);
+//	}
+//	//预留
+//	i += C_SERVER_QUERY_STATUS_ANS_GUN_RESERVE_LEN;
+//
+//	if (i == (C_SERVER_QUERY_STATUS_ANS_LEN + MSGBODY_OFFSET))
+//	{
+//		return i;
+//	}
+//
+//	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+//	return 0;
+//}
+
+/**
+ * @brief 充电桩相应服务器读取桩状态请求
+ * @param
+ * @return
+ */
+//static void CCU_Send8027(void)
+//{
+//	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+//
+//	s_sComm_buff.uiResponse_length = CCU_Data8027(s_sComm_buff.ucResponse_buff);
+//
+//	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+//
+//	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+//}
+
+//static void AnalysisMsgbody0027(U16 unMsg_len, const U8 *pcSrc)
+//{
+//	CCU_Send8027();
+//}
+
+/**
+ * @brief 解析平台下发CCU升级指令0028
+ * @param unMsg_len:数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0028(U16 unMsg_len, const U8 *pcSrc)
+{
+	g_Updata_CommBuf.u16RecvDataCnt = unMsg_len + 9U;
+	(void)memcpy(g_Updata_CommBuf.u8Recvbuf,pcSrc,g_Updata_CommBuf.u16RecvDataCnt);
+
+	if(NormalUpdataTask_Handler != NULL)
+	{
+		if((TRUE == blTcpCheckUpdateMsg()) && (NULL != TCP_Updata_Binary_Semaphore))
+		{
+			(void)xSemaphoreGive(TCP_Updata_Binary_Semaphore);
+		}
+	}
+}
+
+/**
+ * @brief 解析平台下发SECC升级指令0029
+ * @param unMsg_len:数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0029(U16 unMsg_len, const U8 *pcSrc)
+{
+	g_SeccUpgrade_CommBuf[0].u16RecvDataCnt = unMsg_len + 9U;
+	(void)memcpy(g_SeccUpgrade_CommBuf[0].u8Recvbuf,pcSrc,g_SeccUpgrade_CommBuf[0].u16RecvDataCnt);
+
+	if((TRUE == blSeccCheckUpgradeMsg(0)) && (NULL != SECC_BinarySemaphore[0].SeccUpgrade_Binary_Semaphore))
+	{
+		(void)xSemaphoreGive(SECC_BinarySemaphore[0].SeccUpgrade_Binary_Semaphore);
+	}
+	(void)memcpy(&g_Secc_LogAndUpgrade[0].MessageId,&pcSrc[5],2);
+}
+
+/**
+ * @brief 解析平台下发读取SECC日志指令0030
+ * @param unMsg_len:数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0030(U16 unMsg_len, const U8 *pcSrc)
+{
+	uint8_t GunNumber = pcSrc[9] - ((2U * g_sStorage_data.ucPile_num) - 1U);
+	//数据位开始位，枪ID
+	if((GunNumber == GUN_A) || (GunNumber == GUN_B))
+	{
+		g_SeccUpgrade_CommBuf[GunNumber].u16RecvDataCnt = unMsg_len + 9U;
+		(void)memcpy(g_SeccUpgrade_CommBuf[GunNumber].u8Recvbuf,pcSrc,g_SeccUpgrade_CommBuf[GunNumber].u16RecvDataCnt);
+
+		(void)memcpy(&g_Secc_LogAndUpgrade[(U8)GunNumber].MessageId,&pcSrc[5],2);
+
+		if ((TRUE == (blSeccCheckReadLogMsg(GunNumber))) && (NULL != SECC_BinarySemaphore[GunNumber].SeccReadLog_Binary_Semaphore))
+		{
+			(void)xSemaphoreGive(SECC_BinarySemaphore[GunNumber].SeccReadLog_Binary_Semaphore);
+		}
+	}
+}
+
+/**
+ * @brief 平台状态响应报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data8032(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_SERVER_STATUS_ANS_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = ((C_SERVER_STATUS_ANS_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_SERVER_STATUS_ANS_CMD & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+
+	pucDst[i] = (((U16)C_SERVER_STATUS_ANS_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_SERVER_STATUS_ANS_LEN & 0xffU);
+	i++;
+
+	pucDst[i] = (U8)TRUE;
+	i++;
+
+	if (i == (C_SERVER_STATUS_ANS_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	my_printf(USER_ERROR, "%s:%d ccu send message len error = %d\n", __FILE__, __LINE__, i);
+	return 0;
+}
+
+/**
+ * @brief 充电桩响应应服务器下发本身状态
+ * @param
+ * @return
+ */
+static void CCU_Send8032(void)
+{
+	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+
+	s_sComm_buff.uiResponse_length = CCU_Data8032(s_sComm_buff.ucResponse_buff);
+
+	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+
+	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+}
+
+/**
+ * @brief PCU下发正常状态处理
+ * @param eGun_id：枪id
+ * @return
+ */
+static void PCUStatusRestoreProcess(const Gun_Id_e eGun_id)
+{
+	if (FALSE == GunIdValidCheck(eGun_id))
+	{
+		return ;
+	}
+
+	//同步恢复禁用状态
+	g_sGun_data[eGun_id].ucGun_disable_status = GUN_ENABLE_STATUS;
+	GunStatusChange(eGun_id, STA_IDLE, TRUE, FALSE);
+	my_printf(USER_INFO, "%s:%d %s receive pcu control STA_IDLE\n", __FILE__, __LINE__,
+								(eGun_id==GUN_A)?"GUN_A":"GUN_B");
+
+}
+
+/**
+ * @brief 处理PCU状态指令0032的单枪逻辑
+ * @param eGun_id 枪索引
+ * @param pcSrc 原始数据指针
+ */
+static void HandlePCUStatus0032(const Gun_Id_e eGun_id, const U8* pcSrc)
+{
+    //处理预约状态
+    if (0U != pcSrc[4])
+    {
+        GunStatusChange(eGun_id, STA_BOOK, FALSE, FALSE);
+    }
+
+    //处理PCU控制指令
+    switch (pcSrc[3])
+    {
+        case 0:// 正常状态
+            // 恢复PCU相关故障告警
+            if (g_sGun_fault[eGun_id].sUnnecessary_upload_fault.sItem.PCU_cause_gun_error != (U8)FALSE)
+            {
+                GunAlarmReset(&g_sGun_fault[eGun_id].sUnnecessary_upload_fault.ucWhole_flag, BIT8_STRUCT, PCU_CAUSE_GUN_ERROR);
+            }
+
+			my_printf(USER_INFO, "%s:%d %s PCU control gun normal status\n", __FILE__, __LINE__, (eGun_id == GUN_A) ? "GUN_A" : "GUN_B");
+            // 恢复PCU状态
+            PCUStatusRestoreProcess(eGun_id);
+            break;
+
+        case 1:// 故障状态
+            // 置位PCU相关故障告警
+            if (g_sGun_fault[eGun_id].sUnnecessary_upload_fault.sItem.PCU_cause_gun_error != (U8)TRUE)
+            {
+                GunAlarmSet(&g_sGun_fault[eGun_id].sUnnecessary_upload_fault.ucWhole_flag, BIT8_STRUCT, PCU_CAUSE_GUN_ERROR);
+                my_printf(USER_ERROR, "%s:%d %s PCU control gun alarm status\n", __FILE__, __LINE__, (eGun_id == GUN_A) ? "GUN_A" : "GUN_B");
+            }
+            break;
+
+        case 2:// 不可用状态
+            // 充电中不影响本次充电
+            if (TRUE == CheckChargingStatus(eGun_id))
+            {
+                my_printf(USER_ERROR, "%s:%d CHARGING: %s receive PCU control gun unavailable\n", __FILE__, __LINE__, (eGun_id == GUN_A) ? "GUN_A" : "GUN_B");
+            }
+            // 非充电状态：设置枪不可用
+            else
+            {
+                // 恢复之前的PCU故障告警
+                if (g_sGun_fault[eGun_id].sUnnecessary_upload_fault.sItem.PCU_cause_gun_error != (U8)FALSE)
+                {
+                    GunAlarmReset(&g_sGun_fault[eGun_id].sUnnecessary_upload_fault.ucWhole_flag, BIT8_STRUCT, PCU_CAUSE_GUN_ERROR);
+                }
+                my_printf(USER_ERROR, "%s:%d %s PCU control gun unavailable\n",  __FILE__, __LINE__, (eGun_id == GUN_A) ? "GUN_A" : "GUN_B");
+                // 同步禁用状态并更新枪状态
+                g_sGun_data[eGun_id].ucGun_disable_status = GUN_DISABLE_STATUS;
+                GunStatusChange(eGun_id, STA_UNAVAILABLE, FALSE, FALSE);
+            }
+            break;
+
+        default:// 无效指令
+            my_printf(USER_ERROR, "%s:%d %s PCU 0032 control cmd error = %d\n", __FILE__, __LINE__, (eGun_id == GUN_A) ? "GUN_A" : "GUN_B",
+                     pcSrc[3]);
+            break;
+    }
+}
+
+/**
+ * @brief 解析平台下发自身状态指令0032
+ * @param unMsg_len:数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0032(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_SERVER_SELF_STATUS_LEN);
+
+	CCU_Send8032();
+
+	//暂定义桩端不关注PCU自检状态
+	//自检状态
+//	if (SELF_TEST_SUCCESS == pcSrc[0])
+//	{
+//		PileAlarmReset(ALARM_ID_PCU_ERROR);
+//	}
+//	else if (SELF_TEST_PROCESS == pcSrc[0])
+//	{
+//		PileAlarmSet(ALARM_ID_PCU_ERROR);
+//		GunStatusChange(GUN_A, STA_FAULT, FALSE, FALSE);
+//		GunStatusChange(GUN_B, STA_FAULT, FALSE, FALSE);
+//	}
+//	//故障
+//	if (0x01 == pcSrc[1])//PCU故障停止
+//	{
+//		PileAlarmSet(ALARM_ID_PCU_ERROR);
+//		my_printf(USER_ERROR, "%s:%d PCU set pile unavailable\n", __FILE__, __LINE__);
+//	}
+//	else
+//	{
+//		PileAlarmReset(ALARM_ID_PCU_ERROR);
+//	}
+	if (pcSrc[2] == g_sStorage_data.sPublic_data[GUN_A].eGun_id)
+	{
+		HandlePCUStatus0032(GUN_A, pcSrc);
+	}
+	else if (pcSrc[2] == g_sStorage_data.sPublic_data[GUN_B].eGun_id)
+	{
+		HandlePCUStatus0032(GUN_B, pcSrc);
+	}
+	else
+	{
+		//
+	}
+}
+
+/**
+ * @brief 解析平台下发起始充电数据请求指令0033
+ * @param unMsg_len:数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0033(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_SERVER_SELF_STATUS_LEN);
+}
+
+/**
+ * @brief 平台故障注入报文数据填充
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data8034(U8 *pucDst)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_SERVER_FAULT_ANS_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = ((C_SERVER_FAULT_INJECTION_ANS_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_SERVER_FAULT_INJECTION_ANS_CMD & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+
+	pucDst[i] = (U8)(((U16)C_SERVER_STATUS_ANS_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_SERVER_STATUS_ANS_LEN & 0xffU);
+	i++;
+
+	pucDst[i] = (U8)TRUE;
+	i++;
+
+	if (i == (C_SERVER_STATUS_ANS_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	return 0;
+}
+
+/**
+ * @brief 充电桩响应服务器下发本身状态
+ * @param
+ * @return
+ */
+static void CCU_Send8034(void)
+{
+	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+
+	s_sComm_buff.uiResponse_length = CCU_Data8034(s_sComm_buff.ucResponse_buff);
+
+	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+
+	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+}
+
+/**
+ * @brief 解析平台下发故障注入指令0034
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0034(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_SERVER_SELF_STATUS_LEN);
+
+	CCU_Send8034();
+
+	FaultInjection(pcSrc, (U8)unMsg_len);
+}
+
+/**
+ * @brief 平台调试控制
+ * @param pcSrc:待填充报文数据数组
+ * @return 报文数据长度
+ */
+static U32 CCU_Data8035(U8 *pucDst, BOOL bFlag)
+{
+	CHECK_PTR_NULL(pucDst);
+	CHECK_MSG_LEN(SEND_BUFF_SIZE, C_SERVER_TEST_CONTROL_ANS_LEN + MSGBODY_OFFSET);
+
+	U32 i = 0;
+
+	pucDst[i] = HEAD_NUM_H;
+	i++;
+	pucDst[i] = HEAD_NUM_L;
+	i++;
+	pucDst[i] = g_sStorage_data.ucPile_num;
+	i++;
+	pucDst[i] = ((C_SERVER_TEST_CONTROL_ANS_CMD >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (U8)(C_SERVER_TEST_CONTROL_ANS_CMD & 0xffU);
+	i++;
+
+	(void)memcpy(&pucDst[i], &s_sLocal_state.psMsg_head->unMsg_id, sizeof(s_sLocal_state.psMsg_head->unMsg_id));
+	i+=sizeof(s_sLocal_state.psMsg_head->unMsg_id);
+
+	pucDst[i] = (U8)(((U16)C_SERVER_TEST_CONTROL_ANS_LEN >> 8) & 0xffU);
+	i++;
+	pucDst[i] = (C_SERVER_TEST_CONTROL_ANS_LEN & 0xffU);
+	i++;
+
+	pucDst[i] = (U8)bFlag;
+	i++;
+
+	if (i == (C_SERVER_STATUS_ANS_LEN + MSGBODY_OFFSET))
+	{
+		return i;
+	}
+
+	return 0;
+}
+
+/**
+ * @brief 充电桩响应应服务器下发调试控制
+ * @param
+ * @return
+ */
+static void CCU_Send8035(BOOL bFlag)
+{
+	(void)memset(s_sComm_buff.ucResponse_buff, 0, sizeof(s_sComm_buff.ucResponse_buff));
+
+	s_sComm_buff.uiResponse_length = CCU_Data8035(s_sComm_buff.ucResponse_buff, bFlag);
+
+	MessageDebug(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+
+	(void)TcpSend(s_sComm_buff.ucResponse_buff, s_sComm_buff.uiResponse_length);
+}
+
+/**
+ * @brief 解析平台下发调试控制指令0035
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0035(U16 unMsg_len, const U8 *pcSrc)
+{
+	CHECK_PTR_NULL_NO_RETURN(pcSrc);
+	CHECK_MSG_LEN_NO_RETURN(unMsg_len, S_SERVER_TEST_STATUS_LEN);
+
+	CCU_Send8035(TRUE);
+	int i = 0;
+
+	//调试模式生效
+	if (DEBUG_MODE == g_sPile_data.ucPile_config_mode)
+	{
+		//led
+		Rgb_Pwm_LED_A[0].period = 1000U;
+		Rgb_Pwm_LED_A[0].dutycycle = pcSrc[i++];
+		g_sGun_data[GUN_A].ucLed_dutycycle[0] = Rgb_Pwm_LED_A[0].dutycycle;
+		Rgb_Pwm_LED_A[1].period = 1000U;
+		Rgb_Pwm_LED_A[1].dutycycle = pcSrc[i++];
+		g_sGun_data[GUN_A].ucLed_dutycycle[1] = Rgb_Pwm_LED_A[1].dutycycle;
+		Rgb_Pwm_LED_A[2].period = 1000U;
+		Rgb_Pwm_LED_A[2].dutycycle = pcSrc[i++];
+		g_sGun_data[GUN_A].ucLed_dutycycle[2] = Rgb_Pwm_LED_A[2].dutycycle;
+		Rgb_Pwm_LED_B[0].period = 1000U;
+		Rgb_Pwm_LED_B[0].dutycycle = pcSrc[i++];
+		g_sGun_data[GUN_B].ucLed_dutycycle[0] = Rgb_Pwm_LED_B[0].dutycycle;
+		Rgb_Pwm_LED_B[1].period = 1000U;
+		Rgb_Pwm_LED_B[1].dutycycle = pcSrc[i++];
+		g_sGun_data[GUN_B].ucLed_dutycycle[1] = Rgb_Pwm_LED_B[1].dutycycle;
+		Rgb_Pwm_LED_B[2].period = 1000U;
+		Rgb_Pwm_LED_B[2].dutycycle = pcSrc[i++];
+		g_sGun_data[GUN_B].ucLed_dutycycle[2] = Rgb_Pwm_LED_B[2].dutycycle;
+		if (g_sLed_change_sem != NULL)
+		{
+			(void)xSemaphoreGive(g_sLed_change_sem);
+		}
+		//风扇pwm
+		Fan_Pwm.dutycycle = 100U - pcSrc[i++];
+		//A枪继电器控制
+		RelayControl(GUN_A, POSITIVE_RELAY, (BOOL)pcSrc[i++]);
+		vTaskDelay(50);
+		RelayControl(GUN_A, NEGATIVE_RELAY, (BOOL)pcSrc[i++]);
+		vTaskDelay(50);
+		RelayControl(GUN_A, PRECHARGE_RELAY, (BOOL)pcSrc[i++]);
+		//只支持同时关闭辅源、断开枪锁继电器
+		if ((FALSE == (BOOL)pcSrc[i]) && (FALSE == (BOOL)pcSrc[i+1]))
+		{
+			CigContrlDataInput(CIG_OPEN, OPEN_GUNA_LOCK_RELAY_AND_12V_ASSIST);
+			i+=2;
+		}
+		else
+		{
+			//辅源
+			if (TRUE == (BOOL)pcSrc[i++])
+			{
+				CigContrlDataInput(CIG_CLOSE, CLOSE_GUNA_12V_ASSIST);
+			}
+			//枪锁
+			if (TRUE == (BOOL)pcSrc[i++])
+			{
+				CigContrlDataInput(CIG_CLOSE, CLOSE_GUNA_LOCK_REALY);
+			}
+		}
+
+		//B枪继电器控制
+		RelayControl(GUN_B, POSITIVE_RELAY, (BOOL)pcSrc[i++]);
+		vTaskDelay(50);
+		RelayControl(GUN_B, NEGATIVE_RELAY, (BOOL)pcSrc[i++]);
+		vTaskDelay(50);
+		RelayControl(GUN_B, PRECHARGE_RELAY, (BOOL)pcSrc[i++]);
+		//只支持同时关闭辅源、断开枪锁继电器
+		if ((FALSE == (BOOL)pcSrc[i]) && (FALSE == (BOOL)pcSrc[i+1]))
+		{
+			CigContrlDataInput(CIG_OPEN, OPEN_GUNB_LOCK_RELAY_AND_12V_ASSIST);
+			i+=2;
+		}
+		else
+		{
+			//辅源
+			if (TRUE == (BOOL)pcSrc[i++])
+			{
+				CigContrlDataInput(CIG_CLOSE, CLOSE_GUNB_12V_ASSIST);
+			}
+			//枪锁
+			if (TRUE == (BOOL)pcSrc[i++])
+			{
+				CigContrlDataInput(CIG_CLOSE, CLOSE_GUNB_LOCK_REALY);
+			}
+		}
+		//风扇继电器控制
+		RelayControlPile(FAN_RELAY, (BOOL)pcSrc[i++]);
+		vTaskDelay(10);
+		//hmi照明灯继电器
+		RelayControlPile(HMI_LIGHT_RELAY, (BOOL)pcSrc[i++]);
+	}
+	else//只支持控制辅源和枪锁
+	{
+		i = 10U;
+		//只支持同时关闭辅源、断开枪锁继电器
+		if ((FALSE == (BOOL)pcSrc[i]) && (FALSE == (BOOL)pcSrc[i+1]))
+		{
+			CigContrlDataInput(CIG_OPEN, OPEN_GUNA_LOCK_RELAY_AND_12V_ASSIST);
+			i+=2;
+		}
+		else
+		{
+			//辅源
+			if (TRUE == (BOOL)pcSrc[i++])
+			{
+				CigContrlDataInput(CIG_CLOSE, CLOSE_GUNA_12V_ASSIST);
+			}
+			//枪锁
+			if (TRUE == (BOOL)pcSrc[i++])
+			{
+				CigContrlDataInput(CIG_CLOSE, CLOSE_GUNA_LOCK_REALY);
+			}
+		}
+		i = 15U;
+		//只支持同时关闭辅源、断开枪锁继电器
+		if ((FALSE == (BOOL)pcSrc[i]) && (FALSE == (BOOL)pcSrc[i+1]))
+		{
+			CigContrlDataInput(CIG_OPEN, OPEN_GUNB_LOCK_RELAY_AND_12V_ASSIST);
+			i+=2;
+		}
+		else
+		{
+			//辅源
+			if (TRUE == (BOOL)pcSrc[i++])
+			{
+				CigContrlDataInput(CIG_CLOSE, CLOSE_GUNB_12V_ASSIST);
+			}
+			//枪锁
+			if (TRUE == (BOOL)pcSrc[i++])
+			{
+				CigContrlDataInput(CIG_CLOSE, CLOSE_GUNB_LOCK_REALY);
+			}
+		}
+	}
+}
+
+static void AnalysisMsgbody0036(U16 unMsg_len, const char *pcSrc)
+{
+	ProductionProcess(pcSrc, 0, ETHTYPE);
+}
+
+/**
+ * @brief 解析平台下发小板升级指令0037
+ * @param unMsg_len:数据长度
+ * @param pcSrc:待解析数据
+ * @return 无
+ */
+static void AnalysisMsgbody0037(U16 unMsg_len, const U8 *pcSrc)
+{
+	if(unMsg_len > 252)
+	{
+		return;
+	}
+	//485升级协议
+	__BSS(SRAM_OC) static U8 ucSend_data[280] = {0};
+	U16 u16Crc = 0;
+
+	ucSend_data[0] = 0xAA;//帧头
+	ucSend_data[1] = 0x55;
+	ucSend_data[2] = CIG_ADDR;//小板地址
+	ucSend_data[3] = 0x50;//小板串口升级命令码
+
+	if(pcSrc[10] == 0x01)//升级请求命令
+	{
+		CIG_Upgrade.gblCigUpgradeStatus = TRUE;
+		CIG_Upgrade.TimeOut = 0;
+		ucSend_data[4] = 0x09;
+	}
+	else if(pcSrc[10] == 0x02)//升级准备
+	{
+		ucSend_data[4] = 0x04;
+	}
+	else if(pcSrc[10] == 0x06)//校验命令
+	{
+		ucSend_data[4] = 0x08;
+	}
+	else
+	{
+		ucSend_data[4] = (U8)(unMsg_len & 0xFFU);//小板升级协议最大长度是252
+	}
+
+	CIG_Upgrade.gCigMessageId[0] = pcSrc[5];//记下上位机给的message,回复的时候使用
+	CIG_Upgrade.gCigMessageId[1] = pcSrc[6];
+
+	//下面是数据域内容
+	ucSend_data[5] = pcSrc[10];//小板协议命令是高字节在前
+	ucSend_data[6] = pcSrc[9];
+
+	if(pcSrc[10] == 0x06)//校验命令
+	{
+		ucSend_data[7] = 0x02;//固定值
+		ucSend_data[8] = 0x00;//固定值
+	}
+	else
+	{
+		ucSend_data[7] = pcSrc[12];//小板协议包编号是高字节在前
+		ucSend_data[8] = pcSrc[11];
+	}
+
+	if(pcSrc[10] == 0x06)//校验命令,校验码用小端传
+	{
+		ucSend_data[9] = pcSrc[16];
+		ucSend_data[10] = pcSrc[15];
+		ucSend_data[11] = pcSrc[14];
+		ucSend_data[12] = pcSrc[13];
+
+	}
+	else
+	{
+		(void)memcpy(&ucSend_data[9],&pcSrc[13],ucSend_data[4] - 4U);//13以后是版本号或固件包数据，
+	}
+
+	u16Crc = crc16_ccitt_xmodem(&ucSend_data[3], ucSend_data[4] + 2U, 0);//校验位是从命令码开始算的
+
+	ucSend_data[ucSend_data[4] + 5U] = (U8)(u16Crc & 0xFFU);
+	ucSend_data[ucSend_data[4] + 6U] = (U8)(u16Crc>>8);
+
+	ucSend_data[ucSend_data[4] + 7U] = 0x0D;
+	ucSend_data[ucSend_data[4] + 8U] = 0x0A;
+
+	//Uart_Dma_Send(DBG_UART, ucSend_data[4] + 9U , ucSend_data);
+	//uPRINTF("\n");
+
+	Uart_Dma_Send(GB_GUNA_UART, ucSend_data[4] + 9U , ucSend_data);//数据域长度+9个协议字节
+}
+
+/**
+ * @brief 枪告警控制
+ * @param bFlag：置位or恢复
+ * @param eGun_id：枪id
+ * @param uiIndex：故障位
+ * @return 无
+ */
+static void GUNWarnInjection(U8 ucFlag, const Gun_Id_e eGun_id, U32 uiIndex)
+{
+	if (FALSE == GunIdValidCheck(eGun_id))
+	{
+		return ;
+	}
+
+	//告警只有两字节
+	if (uiIndex < 16U)
+	{
+		if (1U == ucFlag)
+		{
+			GunAlarmSet(&g_sGun_warn[eGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, uiIndex);
+		}
+		else
+		{
+			GunAlarmResetTest(&g_sGun_warn[eGun_id].sRecoverable_warn.uiWhole_flag, BIT32_STRUCT, uiIndex);
+		}
+	}
+}
+
+/**
+ * @brief: 枪故障控制
+ * @param bFlag：置位or恢复
+ * @param eGun_id：枪id
+ * @param uiIndex：故障位
+ * @return 无
+ */
+static void GUNFaultInjection(U8 ucFlag, const Gun_Id_e eGun_id, U32 uiIndex)
+{
+	if (FALSE == GunIdValidCheck(eGun_id))
+	{
+		return ;
+	}
+
+	if (1U == ucFlag)
+	{
+		if (uiIndex < 32U)//拔枪可恢复故障
+		{
+			GunAlarmSet(&g_sGun_fault[eGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, uiIndex);
+		}
+		else if ((uiIndex >= 32U) && (uiIndex < 64U))//拔枪不可恢复故障
+		{
+			GunAlarmSet(&g_sGun_fault[eGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, uiIndex-32U);
+		}
+		else if ((uiIndex >= 64U) && (uiIndex < 128U))//secc故障
+		{
+			GunAlarmSet(&g_sSecc_fault[eGun_id].sSecc_fault_first.u64Whole_flag, BIT64_STRUCT, uiIndex-64U);
+		}
+		else if ((uiIndex >= 128U) && (uiIndex < 192U))//secc故障
+		{
+			GunAlarmSet(&g_sSecc_fault[eGun_id].sSecc_fault_second.u64Whole_flag, BIT64_STRUCT, uiIndex-128U);
+		}
+		else if ((uiIndex >= 192U) && (uiIndex < 224U))//secc故障
+		{
+			GunAlarmSet(&g_sSecc_fault[eGun_id].sSecc_fault_third.uiWhole_flag, BIT32_STRUCT, uiIndex-192U);
+		}
+		else if (uiIndex >= 224U && uiIndex < 288U)//secc故障
+		{
+			GunAlarmSet(&g_sSecc_fault[eGun_id].sSecc_fault_fourth.u64Whole_flag, BIT64_STRUCT, uiIndex-224U);
+		}
+		else if (uiIndex >= 288U && uiIndex < 320U)//secc故障
+		{
+			GunAlarmSet(&g_sSecc_fault[eGun_id].sSecc_fault_fifth.unWhole_flag, BIT32_STRUCT, uiIndex-288U);
+		}
+		else
+		{
+			//
+		}
+	}
+	else
+	{
+		if (uiIndex < 32U)//拔枪可恢复故障
+		{
+			GunAlarmResetTest(&g_sGun_fault[eGun_id].sRecoverable_fault.uiWhole_flag, BIT32_STRUCT, uiIndex);
+		}
+		else if ((uiIndex >= 32U) && (uiIndex < 64U))//拔枪不可恢复故障
+		{
+			GunAlarmResetTest(&g_sGun_fault[eGun_id].sGeneral_fault.uiWhole_flag, BIT32_STRUCT, uiIndex-32U);
+		}
+		else if ((uiIndex >= 64U) && (uiIndex < 128U))
+		{
+			GunAlarmResetTest(&g_sSecc_fault[eGun_id].sSecc_fault_first.u64Whole_flag, BIT64_STRUCT, uiIndex-64U);
+		}
+		else if ((uiIndex >= 128U) && (uiIndex < 192U))
+		{
+			GunAlarmResetTest(&g_sSecc_fault[eGun_id].sSecc_fault_second.u64Whole_flag, BIT64_STRUCT, uiIndex-128U);
+		}
+		else if ((uiIndex >= 192U) && (uiIndex < 224U))
+		{
+			GunAlarmResetTest(&g_sSecc_fault[eGun_id].sSecc_fault_third.uiWhole_flag, BIT32_STRUCT, uiIndex-192U);
+		}
+		else if ((uiIndex >= 224U) && (uiIndex < 288U))
+		{
+			GunAlarmResetTest(&g_sSecc_fault[eGun_id].sSecc_fault_fourth.u64Whole_flag, BIT64_STRUCT, uiIndex-224U);
+		}
+		else if ((uiIndex >= 288U) && (uiIndex < 320U))
+		{
+			GunAlarmResetTest(&g_sSecc_fault[eGun_id].sSecc_fault_fifth.unWhole_flag, BIT32_STRUCT, uiIndex-288U);
+		}
+		else
+		{
+			//
+		}
+	}
+}
+
+/**
+ * @brief 解析平台下发故障码
+ * @param ucArray_code:待解析数据
+ * @param length：数据长度
+ * @return 无
+ */
+static void FaultInjection(const U8 *ucArray_code, U8 length)
+{
+	U32 Pile_index = 0;
+	U32 GunWarn_index[2] = {0};
+	U32 GunFault_index[2] = {0};
+
+	for (U32 i = 0; i < length; i++)
+	{
+		U8 ucByte = ucArray_code[i];
+		for (U32 j = 0; j < 8U; j++)
+		{
+			if (i < 8U)//桩告警
+			{
+				U8 bit = (ucByte >> j) & 1U;
+				if ((i == 0U) && (j < 3U))//桩告警只有三位
+				{
+					if (1U == bit)
+					{
+						PileAlarmSet(j+ALARM_ID_RFID_COMM_LOST_ALARM);
+					}
+					else
+					{
+						PileAlarmResetTest(j+ALARM_ID_RFID_COMM_LOST_ALARM);
+					}
+				}
+			}
+			if ((i >= 8U) && (i < 16U))//桩故障
+			{
+				Pile_index++;
+				U8 bit = (ucByte >> j) & 1U;
+				if (((Pile_index + ALARM_ID_PILE_ERROR_BEGIN_FLAG) > ALARM_ID_PILE_ERROR_BEGIN_FLAG)
+						&& ((Pile_index + ALARM_ID_PILE_ERROR_BEGIN_FLAG) <= ALARM_ID_PILE_ERROR_END_FLAG))
+				{
+					if (1U == bit)
+					{
+						if (Pile_index != 1U)//桩故障第一位不使用
+						{
+							PileAlarmSet(Pile_index+ALARM_ID_PILE_ERROR_BEGIN_FLAG);
+						}
+					}
+					else
+					{
+						PileAlarmResetTest(Pile_index+ALARM_ID_PILE_ERROR_BEGIN_FLAG);
+					}
+				}
+			}
+			if ((i >= 16U) && (i < 24U))//A枪告警
+			{
+				U8 bit = (ucByte >> j) & 1U;
+				GUNWarnInjection(bit, GUN_A, GunWarn_index[GUN_A]);
+
+				GunWarn_index[GUN_A]++;
+			}
+			if ((i >= 24U) && (i < 64U))//A枪故障
+			{
+				U8 bit = (ucByte >> j) & 1U;
+				GUNFaultInjection(bit, GUN_A, GunFault_index[GUN_A]);
+
+				GunFault_index[GUN_A]++;
+			}
+			if ((i >= 64U) && (i < 72U))//B枪告警
+			{
+				U8 bit = (ucByte >> j) & 1U;
+				GUNWarnInjection(bit, GUN_B, GunWarn_index[GUN_B]);
+
+				GunWarn_index[GUN_B]++;
+			}
+			if ((i >= 72U) && (i < 112U))//B枪故障
+			{
+				U8 bit = (ucByte >> j) & 1U;
+				GUNFaultInjection(bit, GUN_B, GunFault_index[GUN_B]);
+
+				GunFault_index[GUN_B]++;
+			}
+		}
+	}
+}
+
+/**
+ * @brief 解析报文包头
+ * @param pucBuf:待解析数据
+ * @param unBuf_len：数据长度
+ * @return 无
+ */
+static BOOL AnalysisMsgHead(U8 *pucBuf, U16 unBuf_len)
+{
+	CHECK_PTR_NULL(pucBuf);
+
+	if (unBuf_len < MSGBODY_OFFSET)
+	{
+		s_sLocal_state.psMsg_head = NULL;
+		my_printf(USER_ERROR, "%s:%d receive tcp server msg len error\n", __FILE__, __LINE__);
+		return FALSE;
+	}
+
+	U8 ucTmp = 0;
+	//CMD转换小端
+	ucTmp = pucBuf[3];
+	pucBuf[3] = pucBuf[4];
+	pucBuf[4] = ucTmp;
+	//len转换小端
+	ucTmp = pucBuf[7];
+	pucBuf[7] = pucBuf[8];
+	pucBuf[8] = ucTmp;
+
+	//帧头
+	if ((HEAD_NUM_H == pucBuf[0]) && (HEAD_NUM_L == pucBuf[1]))
+	{
+		if ((PILE_NUM_MIN <= pucBuf[2]) && (pucBuf[2] <= PILE_NUM_MAX))//桩地址
+		{
+			s_sLocal_state.psMsg_head = (MessageHead_t *)(&pucBuf[2]);
+
+			if (NULL != s_sLocal_state.psMsg_head)
+			{
+				if (unBuf_len == (s_sLocal_state.psMsg_head->unMsg_len + MSGBODY_OFFSET))
+				{
+					return TRUE;
+				}
+				else
+				{
+					return FALSE;
+				}
+			}
+		}
+	}
+
+	return TRUE;
+}
+
+static void LoginTimeoutCallback(TimerHandle_t xTimer)
+{
+	g_sMsg_control.sLogin_control.bLogin_timeup_flag = TRUE;
+}
+
+static void HeartTimeoutCallback(TimerHandle_t xTimer)
+{
+	TcpSendControl(&g_sMsg_control.sHeart_control.bHeart_timeup_flag);
+}
+
+static void StartAuthTimeoutCallback(TimerHandle_t xTimer)
+{
+	TcpSendControl(&g_sMsg_control.sAuth_control.bAuth_timeup_flag);
+}
+
+static void ChargingTimeoutCallback(TimerHandle_t xTimer)
+{
+	if (0U == g_sMsg_control.sComm_Unans.ucCharging_unansNum)
+	{
+		TcpSendControl(&g_sMsg_control.sCharging_control.bCharging_timeup_flag);
+	}
+	else
+	{
+		//防止真实丢包，4次未收到响应再次发送一次
+		if (1U == g_sMsg_control.sComm_Unans.ucCharging_unansNum/4U)
+		{
+			TcpSendControl(&g_sMsg_control.sCharging_control.bCharging_timeup_flag);
+		}
+	}
+	g_sMsg_control.sComm_Unans.ucCharging_unansNum++;
+}
+
+static void StopChargeTimeoutCallback(TimerHandle_t xTimer)
+{
+	TcpSendControl(&g_sMsg_control.sStop_charge_control.bStop_charge_timeup_flag);
+}
+
+static void DeviceTimeoutCallback(TimerHandle_t xTimer)
+{
+	TcpSendControl(&g_sDevice_msg_control.bDevice_timeup_flag);
+}
+
+/**
+ * @brief 创建报文上传定时器
+ * @param
+ * @return
+ */
+static void TimerInit(void)
+{
+	//状态报文定时器
+	g_sMsg_control.sHeart_control.sTimer_heart = xTimerCreate("HeartTimer",          /* Text name. */
+								 HEART_TIMER_PERIOD_MS, /* Timer period. */
+								 pdTRUE,             /* Enable auto reload. */
+								 "HEART",                  /* ID is not used. */
+								 &HeartTimeoutCallback);   /* The callback function. */
+
+	g_sMsg_control.sAuth_control.sTimer_auth = xTimerCreate("StartAuthTimer",          /* Text name. */
+								 AUTH_TIMER_PERIOD_MS, /* Timer period. */
+								 pdTRUE,             /* Enable auto reload. */
+								 "START_AUTH",                  /* ID is not used. */
+								 &StartAuthTimeoutCallback);   /* The callback function. */
+
+//	g_sMsg_control.sCharging_control.sTimer_charging = xTimerCreate("ChargingTimer",          /* Text name. */
+//								 CHARGING_TIMER_PERIOD_MS, /* Timer period. */
+//								 pdTRUE,             /* Enable auto reload. */
+//								 "CHARGING",                  /* ID is not used. */
+//								 &ChargingTimeoutCallback);   /* The callback function. */
+
+	g_sMsg_control.sStop_charge_control.sTimer_stop_charge = xTimerCreate("StopChargeTimer",  /* Text name. */
+								 STOP_CHARGE_TIMER_PERIOD_MS, /* Timer period. */
+								 pdTRUE,             /* Enable auto reload. */
+								 "STOP_CHARGE",                  /* ID is not used. */
+								 &StopChargeTimeoutCallback);   /* The callback function. */
+
+	//模块报文定时器
+	g_sDevice_msg_control.sTimer_device = xTimerCreate("DeviceLogTimer",          /* Text name. */
+								 DEVICE_TIMER_PERIOD_MS, /* Timer period. */
+								 pdTRUE,             /* Enable auto reload. */
+								 "DeviceLog",                  /* ID is not used. */
+								 &DeviceTimeoutCallback);   /* The callback function. */
+}
+
+/**
+ * @brief 非循环上传报文，该类定时器仅用于重传
+ * @param eTimer_type:需要停止的定时器标志
+ * @return
+ */
+static void TimerSingleStart(const Single_Timer_e eTimer_type)
+{
+	switch (eTimer_type)
+	{
+	case AUTH_TIMER:
+		if (NULL != g_sMsg_control.sAuth_control.sTimer_auth)
+		{
+			(void)xTimerStart(g_sMsg_control.sAuth_control.sTimer_auth, 0);
+		}
+	break;
+	case CHARGING_TIMER:
+		//充电实时数据
+		if (NULL != g_sMsg_control.sCharging_control.sTimer_charging)
+		{
+			(void)xTimerStart(g_sMsg_control.sCharging_control.sTimer_charging, 0);
+		}
+	break;
+	case STOP_CHARGE_TIMER:
+		if (NULL != g_sMsg_control.sStop_charge_control.sTimer_stop_charge)
+		{
+			(void)xTimerStart(g_sMsg_control.sStop_charge_control.sTimer_stop_charge, 0);
+		}
+	break;
+	default:
+		//
+		break;
+	}
+}
+
+/**
+ * @brief 停止报文定时器
+ * @param eTimer_type:需要停止的定时器
+ * @return
+ */
+static void TimerSingleStop(const Single_Timer_e eTimer_type)
+{
+	switch (eTimer_type)
+	{
+	case AUTH_TIMER:
+		if (NULL != g_sMsg_control.sAuth_control.sTimer_auth)
+		{
+			(void)xTimerStop(g_sMsg_control.sAuth_control.sTimer_auth, 0);
+		}
+	break;
+	case CHARGING_TIMER:
+		//充电实时数据
+		if (NULL != g_sMsg_control.sCharging_control.sTimer_charging)
+		{
+			(void)xTimerStop(g_sMsg_control.sCharging_control.sTimer_charging, 0);
+		}
+	break;
+	case STOP_CHARGE_TIMER:
+		if (NULL != g_sMsg_control.sStop_charge_control.sTimer_stop_charge)
+		{
+			(void)xTimerStop(g_sMsg_control.sStop_charge_control.sTimer_stop_charge, 0);
+		}
+	break;
+	default:
+		//
+		break;
+	}
+}
+
+/**
+ * @brief 启动循环报文定时器
+ * @param
+ * @return
+ */
+static void TimerStart(void)
+{
+	//心跳
+	if (NULL != g_sMsg_control.sHeart_control.sTimer_heart)
+	{
+		(void)xTimerStart(g_sMsg_control.sHeart_control.sTimer_heart, 0);
+	}
+	//外设
+	if (NULL != g_sDevice_msg_control.sTimer_device)
+	{
+		(void)xTimerStart(g_sDevice_msg_control.sTimer_device, 0);
+	}
+}
+
+/**
+ * @brief 停止定时器
+ * @param
+ * @return
+ */
+static void TimerStop(void)
+{
+	if (NULL != g_sMsg_control.sHeart_control.sTimer_heart)
+    {
+		(void)xTimerStop(g_sMsg_control.sHeart_control.sTimer_heart, 0);
+    }
+
+	if (NULL != g_sDevice_msg_control.sTimer_device)
+	{
+		(void)xTimerStop(g_sDevice_msg_control.sTimer_device, 0);
+	}
+
+	TimerSingleStop(AUTH_TIMER);
+	//TimerSingleStop(CHARGING_TIMER);
+	g_sMsg_control.sCharging_control.bCharging_timeup_flag = FALSE;
+	TimerSingleStop(STOP_CHARGE_TIMER);
+	//TimerSingleStop(FINISH_CHARGE_TIMER);
+}
+
+/**
+ * @brief 发送外设数据
+ * @param
+ * @return
+ */
+static void SendDeviceData(void)
+{
+	//外设定时器计时完成
+	if (g_sDevice_msg_control.bDevice_timeup_flag)
+	{
+		//绝缘检测
+		CCU_Send0005();
+		//电表
+		CCU_Send0006();
+		if (TRUE == g_sStorage_data.bUse_ad_pos)
+		{
+			//POS
+			CCU_Send0007();
+		}
+		if (TRUE == g_sStorage_data.bUse_ad_rfid)
+		{
+			//RFID
+			CCU_Send0008();
+		}
+		if (TRUE == g_sStorage_data.bUse_ad_screen)
+		{
+			//HMI
+			CCU_Send0009();
+		}
+		if (g_sStorage_data.sPublic_data[GUN_A].ucGun_type != (U8)GB)
+		{
+			//SECC
+			CCU_Send0010();
+		}
+		else
+		{
+			//CIG
+			CCU_Send0016();
+		}
+		g_sDevice_msg_control.bDevice_timeup_flag = FALSE;
+	}
+}
+
+/**
+ * @brief 心跳超时处理函数
+ * @param
+ * @return TRUE:检测到超时  FALSE:未超时
+ */
+static BOOL TcpDisconnect(void)
+{
+	if (-1 == sockfd)
+	{
+		g_sMsg_control.sComm_Unans.ucHeart_unansNum = 0;
+		PileAlarmSet(ALARM_ID_PCU_COMM_LOST_ERROR);
+		my_printf(USER_ERROR, "%s:%d server disconnect: sockfd = %d\n", __FILE__, __LINE__, sockfd);
+		g_sMsg_control.sComm_Unans.bLoginResult = FALSE;
+
+		//充电中掉线停充
+		if (STA_CHARGING == g_sGun_data[GUN_A].eGun_common_status)
+		{
+			g_sGun_data[GUN_A].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+			StopChargeControl(GUN_A);
+		}
+		if (STA_CHARGING == g_sGun_data[GUN_B].eGun_common_status)
+		{
+			g_sGun_data[GUN_B].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+			StopChargeControl(GUN_B);
+		}
+
+		//关闭其他定时器
+		TimerStop();
+		//重新开启登录定时器
+		if (NULL != g_sMsg_control.sLogin_control.sTimer_login)
+		{
+			(void)xTimerStart(g_sMsg_control.sLogin_control.sTimer_login, 0);
+		}
+
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+/**
+ * @brief 心跳超时处理函数
+ * @param
+ * @return TRUE:检测到超时  FALSE:未超时
+ */
+//extern TaskHandle_t tcp_client_Task_Handler;
+static BOOL HeartTimeout(void)
+{
+	//心跳未收到响应报文次数超限制
+	if ((g_sMsg_control.sComm_Unans.ucHeart_unansNum > HEART_UNANS_CNT_LIMIT))
+	{
+		g_sMsg_control.sComm_Unans.ucHeart_unansNum = 0;
+		my_printf(USER_ERROR, "%s:%d login timeout:ucHeart_unansNum = %d\n", __FILE__, __LINE__, g_sMsg_control.sComm_Unans.ucHeart_unansNum);
+		g_sMsg_control.sComm_Unans.bLoginResult = FALSE;
+
+		PileAlarmSet(ALARM_ID_PCU_COMM_LOST_ERROR);
+
+		//关闭其他定时器
+		TimerStop();
+
+		TcpClose();
+
+        //超时之后延时7s再次重连
+        vTaskDelay(7000);
+
+		//重新开启登录定时器
+		if (NULL != g_sMsg_control.sLogin_control.sTimer_login)
+		{
+			(void)xTimerStart(g_sMsg_control.sLogin_control.sTimer_login, 0);
+		}
+
+        //重新创建TCP客户端
+		taskENTER_CRITICAL();
+
+		vTaskDelete(tcp_client_Task_Handler);
+
+		(void)xTaskCreate(&tcp_client_task, "TCP_CLIENT", 1600U/4U, NULL, TCP_TASK_PRIO, &tcp_client_Task_Handler);
+
+		taskEXIT_CRITICAL();
+
+		return TRUE;
+	}
+	return FALSE;
+}
+
+/**
+ * @brief 充电实时数据超时处理函数
+ * @param
+ * @return
+ */
+static BOOL ChargingDataTimeout(void)
+{
+	//充电实时数据未收到响应报文次数超限制
+	if (g_sMsg_control.sComm_Unans.ucCharging_unansNum > CHARGINF_UNANS_CNT_LIMIT)
+	{
+		g_sMsg_control.sComm_Unans.ucCharging_unansNum = 0;
+		my_printf(USER_ERROR, "%s:%d Real-time data response timeout during charging cnt = %d\n", __FILE__, __LINE__,
+				g_sMsg_control.sComm_Unans.ucCharging_unansNum);
+		g_sMsg_control.sComm_Unans.bLoginResult = FALSE;
+		//停充
+		if (TRUE == CheckChargingStatus(GUN_A))
+		{
+			g_sGun_data[GUN_A].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+			StopChargeControl(GUN_A);
+			PileAlarmSet(ALARM_ID_PCU_COMM_LOST_ERROR);
+		}
+		if (TRUE == CheckChargingStatus(GUN_B))
+		{
+			g_sGun_data[GUN_B].sTemp.eStop_Charge_type = FAULT_STOP_MODE;
+			StopChargeControl(GUN_B);
+			PileAlarmSet(ALARM_ID_PCU_COMM_LOST_ERROR);
+		}
+		//关闭其他定时器
+		TimerStop();
+
+		//重新开启登录定时器
+		if (NULL != g_sMsg_control.sLogin_control.sTimer_login)
+		{
+			(void)xTimerStart(g_sMsg_control.sLogin_control.sTimer_login, 0);
+		}
+
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+/**
+ * @brief 鉴权数据超时处理函数
+ * @param
+ * @return
+ */
+static void AuthDataTimeout(void)
+{
+	//鉴权数据未收到响应报文次数超限制
+	if (g_sMsg_control.sComm_Unans.ucAuth_unansNum > AUTH_UNANS_CNT_LIMIT)
+	{
+		g_sMsg_control.sComm_Unans.ucAuth_unansNum = 0;
+		//告知HMI
+		if(NULL != g_psHMI_data)
+		{
+			g_psHMI_data->ucAuthorize_flag[g_psHMI_data->eGun_id] = AUTHORIZE_FAILED;
+		}
+		TimerSingleStop(AUTH_TIMER);
+		my_printf(USER_ERROR, "%s:%d start auth response timeout\n", __FILE__, __LINE__);
+	}
+}
+
+/**
+ * @brief 发送鉴权报文
+ * @param
+ * @return
+ */
+static void SendAuthData(void)
+{
+	//鉴权数据
+	if ((TRUE == g_sMsg_control.sGun_charge_control.bSend_auth_flag)
+			|| (TRUE == g_sMsg_control.sAuth_control.bAuth_timeup_flag))
+	{
+		g_sMsg_control.sGun_charge_control.bSend_auth_flag = FALSE;
+		g_sMsg_control.sAuth_control.bAuth_timeup_flag = FALSE;
+		CCU_Send0003();
+		g_sMsg_control.sComm_Unans.ucAuth_unansNum++;
+		TimerSingleStart(AUTH_TIMER);
+		my_printf(USER_INFO, "send 0003 auth message:bSend_auth_flag = %d bAuth_timeup_flag = %d\n",
+				g_sMsg_control.sGun_charge_control.bSend_auth_flag, g_sMsg_control.sAuth_control.bAuth_timeup_flag);
+	}
+}
+
+/**
+ * @brief 发送充电实时数据报文
+ * @param
+ * @return
+ */
+static void SendChargingData(void)
+{
+	//充电实时数据
+//	if ((TRUE == g_sMsg_control.sCharging_control.bCharging_timeup_flag)
+//			|| (TRUE == g_sMsg_control.sCharging_control.bSend_charging_data_flag))
+//	{
+	if (TRUE == g_sMsg_control.sCharging_control.bSend_charging_data_flag)
+	{
+		CCU_Send0004();
+		//g_sMsg_control.sCharging_control.bCharging_timeup_flag = FALSE;
+		g_sMsg_control.sCharging_control.bSend_charging_data_flag = FALSE;
+
+		//单枪枪结束且另一把枪不为充电，停止实时数据发送
+		if ((FALSE == CheckChargingStatus(GUN_A)) && (FALSE == CheckChargingStatus(GUN_B)))
+		{
+			//TimerSingleStop(CHARGING_TIMER);
+			g_sMsg_control.sCharging_control.bCharging_timeup_flag = FALSE;
+			my_printf(USER_INFO, "stop send real-time data: GUN_A status = %d GUN_B status = %d\n", g_sGun_data[GUN_A].eGun_common_status,
+					g_sGun_data[GUN_B].eGun_common_status);
+		}
+	}
+}
+
+/**
+ * @brief 发送停止充电报文
+ * @param
+ * @return
+ */
+static void SendStopChargeData(void)
+{
+	//桩停止充电请求
+	if ((TRUE == g_sMsg_control.sGun_charge_control.bStop_charge_flag)
+			|| (TRUE == g_sMsg_control.sStop_charge_control.bStop_charge_timeup_flag))
+	{
+		g_sMsg_control.sGun_charge_control.bStop_charge_flag = FALSE;
+		g_sMsg_control.sStop_charge_control.bStop_charge_timeup_flag = FALSE;
+		CCU_Send0011();
+		TimerSingleStart(STOP_CHARGE_TIMER);
+
+		my_printf(USER_INFO, "send 0011 stop charge: bStop_flag = %d timeup_flag = %d Astop_type = %d fault code = %d %d Bstop_type = %d fault code = %d %d\n",
+				g_sMsg_control.sGun_charge_control.bStop_charge_flag, g_sMsg_control.sStop_charge_control.bStop_charge_timeup_flag, g_sGun_data[GUN_A].sTemp.eStop_Charge_type,
+				g_sGun_fault[GUN_A].sGeneral_fault.uiWhole_flag, g_sGun_fault[GUN_A].sRecoverable_fault.uiWhole_flag,
+				g_sGun_data[GUN_B].sTemp.eStop_Charge_type, g_sGun_fault[GUN_B].sGeneral_fault.uiWhole_flag, g_sGun_fault[GUN_B].sRecoverable_fault.uiWhole_flag);
+	}
+}
+
+/**
+ * @brief 发送心跳报文
+ * @param
+ * @return
+ */
+static void SendHeartBeat(void)
+{
+	if (TRUE == g_sMsg_control.sHeart_control.bHeart_timeup_flag)
+	{
+		CCU_Send0002();
+		(void)xTimerReset(g_sMsg_control.sHeart_control.sTimer_heart, 0);
+		g_sMsg_control.sComm_Unans.ucHeart_unansNum++;
+		g_sMsg_control.sHeart_control.bHeart_timeup_flag = FALSE;
+	}
+}
+
+/**
+ * @brief 发送CCU日志
+ * @param
+ * @return
+ */
+static void SendCCULog(void)
+{
+	if (TRUE == g_sMsg_control.sCCU_log_control.bSend_log_flag)
+	{
+		CCU_Send0014();
+		g_sMsg_control.sCCU_log_control.bSend_log_flag = FALSE;
+	}
+}
+
+/**
+ * @brief 发送CCU日志
+ * @param pucBuf：tcp接受数据缓存
+ * @param unBuf_len:数据长度
+ * @return
+ */
+void CommunicationParse(U8 *pucBuf, U16 unBuf_len)
+{
+	CHECK_PTR_NULL_NO_RETURN(pucBuf);
+
+	//解析数据格式失败
+	if (FALSE == AnalysisMsgHead(pucBuf, unBuf_len))
+	{
+		my_printf(USER_ERROR, "%s:%d receive tcp server msg len error\n", __FILE__, __LINE__);
+		return;
+	}
+
+	//复位心跳超时包
+	g_sMsg_control.sComm_Unans.ucHeart_unansNum = 0;
+	PileAlarmReset(ALARM_ID_PCU_COMM_LOST_ERROR);
+
+	if (NULL != s_sLocal_state.psMsg_head)
+	{
+		switch (s_sLocal_state.psMsg_head->unMsg_cmd)
+		{
+		case S_LOGIN_IN_ANS_CMD:
+			g_sMsg_control.sComm_Unans.bLoginResult = TRUE;
+			my_printf(USER_INFO, "receive server[login]response\n");
+			AnalysisMsgbody8001(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_GUN_STATUS_DATA_ANS_CMD:
+			//my_printf(USER_DEBUG, "receive server[heartbeat]response\n");
+			AnalysisMsgbody8002(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_GUN_AUTH_ANS_CMD:
+			TimerSingleStop(AUTH_TIMER);
+			g_sMsg_control.sComm_Unans.ucAuth_unansNum = 0;
+			g_sMsg_control.sAuth_control.bAuth_timeup_flag = 0;
+			//my_printf(USER_INFO, "receive server[charge auth]response\n");
+			AnalysisMsgbody8003(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_CHARGING_DATA_ANS_CMD:
+			g_sMsg_control.sComm_Unans.ucCharging_unansNum = 0;
+			//my_printf(USER_DEBUG, "receive server[real-data]response\n");
+			break;
+		case S_IMD_DATA_ANS_CMD:
+			//my_printf(USER_DEBUG, "receive server[imd data]response\n");
+			break;
+		case S_METER_DATA_ANS_CMD:
+			//my_printf(USER_DEBUG, "receive server[meter data]response\n");
+			break;
+		case S_POS_DATA_ANS_CMD:
+			//my_printf(USER_DEBUG, "receive server[pos data]response\n");
+			break;
+		case S_RFID_DATA_ANS_CMD:
+			//my_printf(USER_DEBUG, "receive server[rfid data]response\n");
+			break;
+		case S_HMI_DATA_ANS_CMD:
+			//my_printf(USER_DEBUG, "receive server[hmi data]response\n");
+			break;
+		case S_SECC_DATA_ANS_CMD:
+			//my_printf(USER_DEBUG, "receive server[secc data]response\n");
+			break;
+		case S_CIG_DATA_ANS_CMD:
+			//my_printf(USER_DEBUG, "receive server[cig data]response\n");
+			break;
+		case S_STOP_CHARGE_ANS_CMD:
+			TimerSingleStop(STOP_CHARGE_TIMER);
+			my_printf(USER_INFO, "receive server[stop charge output]response\n");
+			break;
+//		case S_CHARGING_BILL_ANS:
+//			my_printf(USER_INFO, "收到服务器【充电结束账单】response\n");
+//			TimerSingleStop(FINISH_CHARGE_TIMER);
+//			TimerSingleStop(CHARGING_TIMER);
+//			AnalysisMsgbody8012(s_sLocal_state.psMsg_head->unMsg_len, pucBuf + MSGBODY_OFFSET);
+//			//g_sMsg_control.sCharging_control.bSend_charging_data_flag = FALSE;
+//			break;
+		case S_CCU_LOG_ANS_CMD:
+			my_printf(USER_DEBUG, "receive server[ccu log]response\n");
+			break;
+		case C_SECC_UP_LOG_ANS_CMD:
+			//my_printf(USER_DEBUG, "receive server[secc log]response\n");
+			AnalysisMsgbody0015(s_sLocal_state.psMsg_head->unMsg_len, pucBuf);
+			break;
+		case S_SERVERSTART_CHARGE_CMD:
+			my_printf(USER_INFO, "receive server[server start charge]control\n");
+			AnalysisMsgbody0020(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_SERVERSTOP_CHARGE_CMD:
+			my_printf(USER_INFO, "receive server[server stop charge]control\n");
+			AnalysisMsgbody0021(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_BOOK_CHARGE_CMD:
+			my_printf(USER_INFO, "receive server[server book charge]control\n");
+			AnalysisMsgbody0022(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_AMOUNT_CMD:
+			my_printf(USER_INFO, "receive server[server amount]control\n");
+			AnalysisMsgbody0024(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_GUN_CONTROL_CMD:
+			my_printf(USER_INFO, "receive server[server control]control\n");
+			AnalysisMsgbody0025(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_SET_GUN_PARAM_CMD:
+			my_printf(USER_INFO, "receive server[server config]control\n");
+			AnalysisMsgbody0026(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+//		case S_SERVER_QUERY_STATUS_CMD:
+//			my_printf(USER_INFO, "receive server[server query]control\n");
+//			AnalysisMsgbody0027(s_sLocal_state.psMsg_head->unMsg_len, pucBuf + MSGBODY_OFFSET);
+//			break;
+		case S_CCU_UPDATE_CMD:
+			//my_printf(USER_INFO, "receive server[ccu update]control\n");
+			AnalysisMsgbody0028(s_sLocal_state.psMsg_head->unMsg_len, pucBuf);
+			break;
+		case S_SECC_UPDATE_CMD:
+			//my_printf(USER_INFO, "receive server[secc update]control\n");
+			AnalysisMsgbody0029(s_sLocal_state.psMsg_head->unMsg_len, pucBuf);
+			break;
+		case S_SECC_LOG_REQUEST_CMD:
+			//my_printf(USER_INFO, "receive server[secc log request]control\n");
+			AnalysisMsgbody0030(s_sLocal_state.psMsg_head->unMsg_len, pucBuf);
+			break;
+		case S_SERVER_STATUS_CMD:
+			//my_printf(USER_INFO, "receive server[server status]control\n");
+			AnalysisMsgbody0032(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			PileAlarmReset(ALARM_ID_PCU_COMM_LOST_ERROR);
+			break;
+		case S_SERVER_FAULT_INJECTION_CMD:
+			my_printf(USER_INFO, "receive server[alarm set]control\n");
+			AnalysisMsgbody0034(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_SERVER_TEST_CONTROL_CMD:
+			my_printf(USER_INFO, "receive server[test control]control\n");
+			AnalysisMsgbody0035(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_PRODUCTION_CONTROL_CMD:
+			AnalysisMsgbody0036(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[MSGBODY_OFFSET]);
+			break;
+		case S_CIG_UPDATE:
+			AnalysisMsgbody0037(s_sLocal_state.psMsg_head->unMsg_len, &pucBuf[0]);
+			break;
+		default:
+			my_printf(USER_ERROR, "%s:%d receive tcp server msg cmd error = %04x\n", __FILE__, __LINE__, s_sLocal_state.psMsg_head->unMsg_cmd);
+			break;
+		}
+	}
+}
+
+void ClearConnectStatus(void)
+{
+	//重连置位取消特殊报文上传
+	g_sMsg_control.sGun_charge_control.bSend_auth_flag = FALSE;
+	g_sMsg_control.sAuth_control.bAuth_timeup_flag = FALSE;
+	g_sMsg_control.sGun_charge_control.bStop_charge_flag = FALSE;
+	g_sMsg_control.sStop_charge_control.bStop_charge_timeup_flag = FALSE;
+	g_sMsg_control.sCharging_control.bSend_charging_data_flag = FALSE;
+	g_sMsg_control.sCharging_control.bCharging_timeup_flag = FALSE;
+	//回复超时计数
+	g_sMsg_control.sComm_Unans.ucHeart_unansNum = 0;
+	g_sMsg_control.sComm_Unans.ucCharging_unansNum = 0;
+	g_sMsg_control.sComm_Unans.ucAuth_unansNum = 0;
+}
+
+static void Tcp_Send_Task(void *pvParameter)
+{
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+	volatile UBaseType_t uxHighWaterMark;
+#endif
+
+	while (1)
+	{
+		//登录
+		if (NULL == g_sMsg_control.sLogin_control.sTimer_login)
+		{
+			g_sMsg_control.sLogin_control.sTimer_login = xTimerCreate("LoginTimer",          /* Text name. */
+										 LOGIN_TIMER_PERIOD_MS, /* Timer period. */
+										 pdTRUE,             	/* Enable auto reload. */
+										 "LOGIN",               /* ID is not used. */
+										 &LoginTimeoutCallback); /* The callback function. */
+			CCU_Send0001();
+			g_sMsg_control.sComm_Unans.ucLogin_unansNum++;
+			g_sMsg_control.sLogin_control.bLogin_timeup_flag = FALSE;
+			ClearConnectStatus();
+
+			if (NULL != g_sMsg_control.sLogin_control.sTimer_login)
+			{
+				(void)xTimerStart(g_sMsg_control.sLogin_control.sTimer_login, 0);
+			}
+		}
+
+		//登录定时器触发
+		if (TRUE == g_sMsg_control.sLogin_control.bLogin_timeup_flag)
+		{
+			CCU_Send0001();
+			g_sMsg_control.sComm_Unans.ucLogin_unansNum++;
+			g_sMsg_control.sLogin_control.bLogin_timeup_flag = FALSE;
+			ClearConnectStatus();
+		}
+
+		//登录次数超限制重连
+		if (g_sMsg_control.sComm_Unans.ucLogin_unansNum > LOGIN_UNANS_CNT_LIMIT)
+		{
+
+		}
+		//收到登录响应报文
+		if (TRUE == g_sMsg_control.sComm_Unans.bLoginResult)
+		{
+			//关闭登录定时器
+			if (NULL != g_sMsg_control.sLogin_control.sTimer_login)
+			{
+				(void)xTimerStop(g_sMsg_control.sLogin_control.sTimer_login, 0);
+				g_sMsg_control.sComm_Unans.ucLogin_unansNum = 0;
+			}
+
+			//启动循环定时器
+			TimerStart();
+
+			while (1)
+			{
+				if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_trigger_sem, portMAX_DELAY))
+				{
+					//心跳超时
+					if (TRUE == HeartTimeout())
+					{
+						break;
+					}
+					//服务器主动断开
+					if (TRUE == TcpDisconnect())
+					{
+						break;
+					}
+					//充电实时数据超时
+					if (TRUE == ChargingDataTimeout())
+					{
+						break;
+					}
+					//鉴权报文超时
+					AuthDataTimeout();
+
+					//发送鉴权报文
+					SendAuthData();
+					//发送充电实时数据
+					SendChargingData();
+					//发送停止充电请求
+					SendStopChargeData();
+					//循环发送报文
+					//心跳
+					SendHeartBeat();
+					//外设数据
+					SendDeviceData();
+
+					//CCU日志数据
+					SendCCULog();
+				}
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+				uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+#endif
+			}
+		}
+		vTaskDelay(500);
+	}
+}
+
+/**
+ * @brief 充电桩告警&故障报文填充函数
+ * @param
+ * @return
+ */
+static void AlarmFillFunc(void)
+{
+	U32 j = 0, k = 0;
+
+	(void)memset(&g_sAlarm_control.sPile_alarm_buff, 0, sizeof(g_sAlarm_control.sPile_alarm_buff));
+	(void)memset(&g_sAlarm_control.sGun_alarm_buff[GUN_A], 0, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_A]));
+	(void)memset(&g_sAlarm_control.sGun_alarm_buff[GUN_B], 0, sizeof(g_sAlarm_control.sGun_alarm_buff[GUN_B]));
+
+	if (pdTRUE == xSemaphoreTake(g_sTcp_semaphores.tcp_alarm_read_mutex, portMAX_DELAY))
+	{
+		//桩告警：1-5字节
+		j = 0;
+		k = 0;
+		for (U32 i = ALARM_ID_PILE_ALARM_BEGIN_FLAG+1U; i < ALARM_ID_PILE_ALARM_END_FLAG; i++)
+		{
+			S32 iPile_alarm_flag = 0;
+
+			(void)GetSigVal(i, &iPile_alarm_flag);
+
+			g_sAlarm_control.sPile_alarm_buff.sPile_warn.ucPile_warn_buf[j] |= (U8)(((U32)iPile_alarm_flag & 0x01U) << k);
+			k++;
+			j += k/8U;
+			if (8U == k)
+			{
+				k = 0U;
+			}
+		}
+		//POS告警：第6字节
+		//HMI告警：第7字节
+		//RFID告警：第8字节
+
+		//桩故障：1-5字节
+		j = 0;
+		k = 0;
+		for (U32 i = ALARM_ID_PILE_ERROR_BEGIN_FLAG+1U; i < ALARM_ID_PILE_ERROR_END_FLAG; i++)
+		{
+			S32 iPile_error_flag = 0;
+
+			(void)GetSigVal(i, &iPile_error_flag);
+			g_sAlarm_control.sPile_alarm_buff.sPile_fault.ucPile_fault_buf[j] |= (U8)(((U32)iPile_error_flag & 0x01U) << k);
+			k++;
+			j += k/8U;
+			if (8U == k)
+			{
+				k = 0U;
+			}
+		}
+		//桩故障第一位为PCU端故障，不上传
+		g_sAlarm_control.sPile_alarm_buff.sPile_fault.ucPile_fault_buf[0] &= 0xFEU;
+		//POS故障：第6字节
+		//HMI故障：第7字节
+		//RFID故障：第8字节
+
+		U32 uiWarn_len = 0;
+		U32 uiTemp = 0;
+		U32 uiFault_len = 0;
+		//A枪告警：1-5字节
+		uiWarn_len = sizeof(g_sGun_warn[GUN_A].sRecoverable_warn.uiWhole_flag);
+		(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_warn.ucGun_warn_buf, &g_sGun_warn[GUN_A].sRecoverable_warn.uiWhole_flag, uiWarn_len);
+		//imd告警：第6字节
+		//meter告警：第7字节
+		//secc告警：第8字节
+
+		//A枪故障:1-8字节
+		uiFault_len = sizeof(g_sGun_fault[GUN_A].sRecoverable_fault.uiWhole_flag);
+		(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault.ucGun_fault_buf, &g_sGun_fault[GUN_A].sRecoverable_fault.uiWhole_flag, uiFault_len);
+		uiTemp = uiFault_len;
+		uiFault_len = sizeof(g_sGun_fault[GUN_A].sGeneral_fault.uiWhole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault.ucGun_fault_buf[uiTemp], &g_sGun_fault[GUN_A].sGeneral_fault.uiWhole_flag, uiFault_len);
+
+		//绝缘检测故障:第9字节
+		if (NULL != g_pImd_fault[GUN_A])
+		{
+			(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault.ucImd_fault_buf, g_pImd_fault[GUN_A], 1);
+		}
+		//meter故障：第10字节
+		if (NULL != g_pMeter_fault[GUN_A])
+		{
+			(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault.ucMeter_fault_buf, g_pMeter_fault[GUN_A], 1);
+		}
+		//secc故障：第11-40字节
+		uiFault_len = sizeof(g_sSecc_fault[GUN_A].sSecc_fault_first.u64Whole_flag);
+		(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault.ucSecc_fault_buf, &g_sSecc_fault[GUN_A].sSecc_fault_first.u64Whole_flag, uiFault_len);
+		uiTemp = uiFault_len;
+		uiFault_len = sizeof(g_sSecc_fault[GUN_A].sSecc_fault_second.u64Whole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault.ucSecc_fault_buf[uiTemp], &g_sSecc_fault[GUN_A].sSecc_fault_second.u64Whole_flag, uiFault_len);
+		uiTemp += uiFault_len;
+		uiFault_len = sizeof(g_sSecc_fault[GUN_A].sSecc_fault_third.uiWhole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault.ucSecc_fault_buf[uiTemp], &g_sSecc_fault[GUN_A].sSecc_fault_third.uiWhole_flag, uiFault_len);
+		uiTemp += uiFault_len;
+		uiFault_len = sizeof(g_sSecc_fault[GUN_A].sSecc_fault_fourth.u64Whole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault.ucSecc_fault_buf[uiTemp], &g_sSecc_fault[GUN_A].sSecc_fault_fourth.u64Whole_flag, uiFault_len);
+		uiTemp += uiFault_len;
+		uiFault_len = sizeof(g_sSecc_fault[GUN_A].sSecc_fault_fifth.unWhole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_A].sGun_fault.ucSecc_fault_buf[uiTemp], &g_sSecc_fault[GUN_A].sSecc_fault_fifth.unWhole_flag, uiFault_len);
+
+		//B枪告警：1-5字节
+		uiWarn_len = sizeof(g_sGun_warn[GUN_B].sRecoverable_warn.uiWhole_flag);
+		(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_warn.ucGun_warn_buf, &g_sGun_warn[GUN_B].sRecoverable_warn.uiWhole_flag, uiWarn_len);
+		//imd告警：第6字节
+		//meter告警：第7字节
+		//secc告警：第8字节
+
+		//B枪故障:1-8字节
+		uiFault_len = sizeof(g_sGun_fault[GUN_B].sRecoverable_fault.uiWhole_flag);
+		(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault.ucGun_fault_buf, &g_sGun_fault[GUN_B].sRecoverable_fault.uiWhole_flag, uiFault_len);
+		uiTemp = uiFault_len;
+		uiFault_len = sizeof(g_sGun_fault[GUN_B].sGeneral_fault.uiWhole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault.ucGun_fault_buf[uiTemp], &g_sGun_fault[GUN_B].sGeneral_fault.uiWhole_flag, uiFault_len);
+
+		//绝缘检测故障:第9字节
+		if (NULL != g_pImd_fault[GUN_B])
+		{
+			(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault.ucImd_fault_buf, g_pImd_fault[GUN_B], 1);
+		}
+		//meter故障：第10字节
+		if (NULL != g_pMeter_fault[GUN_B])
+		{
+			(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault.ucMeter_fault_buf, g_pMeter_fault[GUN_B], 1);
+		}
+		//secc故障：第11-40字节
+		uiFault_len = sizeof(g_sSecc_fault[GUN_B].sSecc_fault_first.u64Whole_flag);
+		(void)memcpy(g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault.ucSecc_fault_buf, &g_sSecc_fault[GUN_B].sSecc_fault_first.u64Whole_flag, uiFault_len);
+		uiTemp = uiFault_len;
+		uiFault_len = sizeof(g_sSecc_fault[GUN_B].sSecc_fault_second.u64Whole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault.ucSecc_fault_buf[uiTemp], &g_sSecc_fault[GUN_B].sSecc_fault_second.u64Whole_flag, uiFault_len);
+		uiTemp += uiFault_len;
+		uiFault_len = sizeof(g_sSecc_fault[GUN_B].sSecc_fault_third.uiWhole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault.ucSecc_fault_buf[uiTemp], &g_sSecc_fault[GUN_B].sSecc_fault_third.uiWhole_flag, uiFault_len);
+		uiTemp += uiFault_len;
+		uiFault_len = sizeof(g_sSecc_fault[GUN_B].sSecc_fault_fourth.u64Whole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault.ucSecc_fault_buf[uiTemp], &g_sSecc_fault[GUN_B].sSecc_fault_fourth.u64Whole_flag, uiFault_len);
+		//my_printf(USER_INFO, "SECC fourth flag = %lld\n", g_sSecc_fault[GUN_B].sSecc_fault_fourth.u64Whole_flag);
+		uiTemp += uiFault_len;
+		uiFault_len = sizeof(g_sSecc_fault[GUN_B].sSecc_fault_fifth.unWhole_flag);
+		(void)memcpy(&g_sAlarm_control.sGun_alarm_buff[GUN_B].sGun_fault.ucSecc_fault_buf[uiTemp], &g_sSecc_fault[GUN_B].sSecc_fault_fifth.unWhole_flag, uiFault_len);
+
+		(void)xSemaphoreGive(g_sTcp_semaphores.tcp_alarm_read_mutex);
+	}
+}
+
+/**
+ * @brief 充电桩告警&故障报文字段填充线程
+ * @param
+ * @return
+ */
+static void Alarm_Fill_Task(void *pvParameter)
+{
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+	volatile UBaseType_t uxHighWaterMark;
+#endif
+
+	while (1)
+	{
+		//获取到故障/告警更改信号量
+		if (NULL != g_sAlarm_tigger_sem)
+		{
+			if (pdTRUE == xSemaphoreTake(g_sAlarm_tigger_sem, portMAX_DELAY))
+			{
+				//告警&故障填充
+				AlarmFillFunc();
+				//告警/故障bit位填充
+				s_sLocal_state.ucAlarm_flag = SetAlarmFlagFunc();
+				//立即上传心跳
+				TcpSendControl(&g_sMsg_control.sHeart_control.bHeart_timeup_flag);
+				my_printf(USER_INFO, "trigger alarm modify:alarm flag = %d GUN_A=%d GUN_B=%d\n", s_sLocal_state.ucAlarm_flag, g_sGun_data[GUN_A].eGun_common_status,
+						g_sGun_data[GUN_B].eGun_common_status);
+
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+				uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+#endif
+			}
+		}
+	}
+}
+
+/**
+ * @brief 充电桩告警&故障报文字段填充线程
+ * @param
+ * @return
+ */
+static void Send_Charging_Data_Task(void *pvParameter)
+{
+	while (1)
+	{
+		if (TRUE == g_sMsg_control.sCharging_control.bCharging_timeup_flag)
+		{
+			TcpSendControl(&g_sMsg_control.sCharging_control.bSend_charging_data_flag);
+		}
+		vTaskDelay(300);
+	}
+}
+
+void TCP_Init_Task(void * pvParameters)
+{
+	g_sTcp_semaphores.tcp_send_mutex = xSemaphoreCreateMutex();
+    g_sTcp_semaphores.tcp_trigger_sem = xSemaphoreCreateBinary();
+    g_sTcp_semaphores.tcp_alarm_read_mutex = xSemaphoreCreateMutex();
+    g_sAlarm_tigger_sem = xSemaphoreCreateBinary();
+
+    if ((NULL == g_sTcp_semaphores.tcp_trigger_sem) || (NULL == g_sTcp_semaphores.tcp_alarm_read_mutex)
+    		|| (NULL == g_sAlarm_tigger_sem) || (NULL == g_sTcp_semaphores.tcp_send_mutex))
+    {
+    	my_printf(USER_ERROR, "%s:%d TCP_Init_Task error\n", __FILE__, __LINE__);
+    	vTaskSuspend(NULL);
+    }
+
+    vTaskDelay(1000);
+
+    TimerInit();
+
+	taskENTER_CRITICAL();
+
+	//add other tcp_init task here
+	(void)xTaskCreate(&Tcp_Send_Task, "TCP_SEND", 1600U/4U, NULL, IMPORTENT_TASK_TASK_PRIO+1U, NULL);
+	//告警&故障填充
+	(void)xTaskCreate(&Alarm_Fill_Task, "ALARM_FILL", 600U/4U, NULL, GENERAL_TASK_PRIO, NULL);
+	//实时数据上传
+	(void)xTaskCreate(&Send_Charging_Data_Task, "Send_Charging_Data", 500U/4U, NULL, IMPORTENT_TASK_TASK_PRIO, NULL);
+
+	vTaskDelete(NULL);
+
+	taskEXIT_CRITICAL();
+}

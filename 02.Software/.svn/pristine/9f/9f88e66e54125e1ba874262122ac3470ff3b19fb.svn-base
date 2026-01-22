@@ -1,0 +1,302 @@
+/*
+ * GB_27930_comm.h
+ *
+ *  Created on: 2025年5月5日
+ *      Author: qjwu
+ */
+
+#ifndef APP_GB_27930_COMM_H_
+#define APP_GB_27930_COMM_H_
+
+#include "charge_comm_IF.h"
+#include "timers.h"
+
+#define DELAY_200MS			   200U
+//没有CHM的旧车绝缘电压设定
+#define DEFAULT_VEHICLE_IMD_VOL	5000//0.1V
+//预充前压差判定
+#define GB_UNDER_VOL_LIMIT	   5//%5
+//预充超时时间
+#define GB_PRECHARGE_TIMEOUT   60000U
+//预充限制电压
+#define GB_PRECHARGE_VOL_DIFF  50U //0.1V
+
+//gb
+#define GB_BHM_TIMEOUT_TICK    10100U //5100U 兼容2023,10S未收到BHM继续往下走流程
+#define GB_BRM_TIMEOUT_TICK    5100U
+#define GB_BCP_TIMEOUT_TICK    5100U
+#define GB_BRO_00_TIMEOUT_TICK 5100U
+#define GB_BRO_AA_TIMEOUT_TICK 60100U
+#define GB_BCL_TIMEOUT_TICK    1050U
+#define GB_BCS_TIMEOUT_TICK    5100U
+#define GB_BSM_TIMEOUT_TICK	   5100U
+#define GB_BST_TIMEOUT_TICK    5100U
+#define GB_BSD_TIMEOUT_TICK    10100U
+
+#define GB_CHM_DATA_LEN        3
+#define GB_CRM_DATA_LEN        8
+#define GB_CTS_DATA_LEN        7
+#define GB_CML_DATA_LEN        8
+#define GB_CRO_DATA_LEN        1
+#define GB_CCS_DATA_LEN        7
+#define GB_CST_DATA_LEN        4
+#define GB_CSD_DATA_LEN        8
+#define GB_CEM_DATA_LEN        4
+
+#pragma pack(1)
+
+typedef enum
+{
+	GB_2015 = 1,
+	GB_2023 = 2
+}GB_Version_t;
+
+enum
+{
+	VALID_STATUS		= 0,
+	INVALID_STATUS		= 1,
+	UNRELIABLE_STATUS	= 2
+};
+
+enum
+{
+	HANDSHAKE_NORMAL	= 0,
+	HANDSHAKE_RECONNECT = 1
+};
+
+/******27930通讯 协议数据定义*********/
+typedef struct
+{
+    U16 unMax_allow_vol; 		//0.1V
+}GB_BHM_Data_t;
+
+typedef struct
+{
+	U8 ucBms_version[3];
+	U8 ucBattery_type;
+	U16 unBattery_rated_KWH;	//0.1Ah
+	U16 unBattery_rated_volta;	//0.1V
+    U8 ucBattery_manufacturer[4];
+    U8 ucBattery_pack_number[4];
+    U8 year;
+    U8 month;
+    U8 day;
+    U8 ucCycle_cnt[3];
+    U8 ucProperty;
+    U8 reserve;
+    U8 VIN[17];
+    U8 ucBms_software_version[8];
+}GB_BRM_Data_t;
+
+typedef struct
+{
+    U16 unSingle_battery_max_allow_vol;	//0.01V 0~24
+	U16 unMax_allow_cur;				//0.1A
+    U16 unBattery_total_energy;			//0.1KWH
+	U16 unMax_allow_total_vol;			//0.1V
+	U8 ucBattery_max_allow_temp;			//1℃  -50~+200
+    U16 unBattery_SOC;					//%0.1
+    U16 unVehicle_check_vol;			//0.1V
+}GB_BCP_Data_t;
+
+typedef struct
+{
+    U8 ucBro_status;
+}GB_BRO_Data_t;
+
+typedef struct
+{
+	U16 unTarget_vol; //0.1V
+	U16 unTarget_cur; //0.1A
+	U8  ucCharge_mode;
+}GB_BCL_Data_t;
+
+typedef struct
+{
+	U16 unEV_detect_vol;			//0.1V
+	U16 unEV_detect_cur;			//0.1A
+	U16 unMax_single_vol_and_group;	//0.01V
+	U8  ucCurrent_SOC;				//%1
+	U16 unRemained_time;			//1min
+}GB_BCS_Data_t;
+
+typedef struct
+{
+    U8 ucMax_single_vol_num;
+    U8 ucMax_battery_temp;	//1℃
+    U8 ucMax_temp_num;
+    U8 ucMin_battery_temp;	//1℃
+    U8 ucMin_temp_num;
+    U8 ucSingle_battery_vol_state:2;
+    U8 ucBattery_soc_state:2;
+    U8 ucBattery_over_cur_state:2;
+    U8 ucBattery_over_temp_state:2;
+    U8 ucBattery_insula_state:2;
+    U8 ucBattery_connect_state:2;
+    U8 ucCharge_enable_state:2;
+    U8 reserve:2;
+}GB_BSM_Data_t;
+
+typedef union
+{
+    struct
+    {
+        U8 ucAchieve_target_soc:2;
+        U8 ucAchieve_target_vol:2;
+        U8 ucTarget_single_vol:2;
+        U8 ucReceive_bst:2;
+    }sItem;
+    U8 ucWhole;
+}BST_Stop_Reason_t;
+
+typedef union
+{
+    struct
+    {
+        U16 unInsulation_error:2;
+        U16 unConnector_over_temp:2;
+        U16 unBms_cell_over_temp:2;
+        U16 unCharge_conn_error:2;
+        U16 unBat_over_temp:2;
+        U16 unRelay_error:2;
+        U16 unCheck_p2_error:2;
+        U16 other_fault:2;
+    }sItem;
+    U16 unWhole;
+}BST_Fault_Reason_t;
+
+typedef union
+{
+    struct
+    {
+        U8 ucOver_cur:2;
+        U8 ucVol_err:2;
+        U8 ucParam_dismatch:2;
+        U8 reserve:2;
+    }sItem;
+    U8 ucWhole;
+}BST_Err_Reason_t;
+
+typedef struct
+{
+	BST_Stop_Reason_t sStop_reason;
+	BST_Fault_Reason_t sFault_reason;
+	BST_Err_Reason_t sErr_reason;
+}GB_BST_Data_t;
+
+typedef struct
+{
+    U8 ucStop_SOC;			//%1
+	U16 unMin_single_vol;	//0.01V
+	U16 unMax_single_vol;	//0.01V
+	U8 ucMin_battery_temp;	//1℃
+	U8 ucMax_battery_temp;	//1℃
+}GB_BSD_Data_t;
+
+typedef union
+{
+    U32 uiTimeout_id;
+    struct
+    {
+    	U32 crm_00:2;
+    	U32 crm_AA:2;
+    	U32 reserve1:4;
+    	U32 cml_cts:2;
+    	U32 cro:2;
+    	U32 reserve2:4;
+    	U32 ccs:2;
+    	U32 cst:2;
+    	U32 reserve3:4;
+    	U32 csd:2;
+    	U32 reserve4:6;
+    }sTimeout;
+}GB_BEM_Data_t;
+
+typedef struct
+{
+    GB_BHM_Data_t sBHM;
+    GB_BRM_Data_t sBRM;
+    GB_BCP_Data_t sBCP;
+    GB_BRO_Data_t sBRO;
+    GB_BCL_Data_t sBCL;
+    GB_BCS_Data_t sBCS;
+    GB_BST_Data_t sBST;
+    GB_BSM_Data_t sBSM;
+    GB_BSD_Data_t sBSD;
+    GB_BEM_Data_t sBEM;
+}GB_Charging_Bms_Data_t;
+
+typedef union
+{
+    U8 ucWhole;
+    struct
+    {
+        U8 ucReach_set_target:2;
+        U8 ucPerson_stop:2;
+        U8 ucFault_stop:2;
+        U8 ucBms_stop:2;
+    }sItem;
+}CST_Stop_Reason_t;
+
+typedef union
+{
+    U16 unWhole;
+    struct
+    {
+    	U16 unOver_temp:2;
+    	U16 unConnector_fault:2;
+    	U16 unInternal_over_temp:2;
+    	U16 unTrans_energy_error:2;
+    	U16 unEstop:2;
+    	U16 unOther_fault:2;
+    	U16 unSelf_check_fault:2;
+    	U16 unPrecharge_fault:2;
+    }sItem;
+}CST_Fault_Reason_t;
+
+typedef union
+{
+    U8 ucWhole;
+    struct
+    {
+        U8 ucOver_cur:2;
+        U8 ucVol_err:2;
+        U8 ucParam_dismatch:2;
+        U8 reserve:2;
+    }sItem;
+}CST_Err_Reason_t;
+
+typedef struct
+{
+    CST_Stop_Reason_t sStop_reason;
+    CST_Fault_Reason_t sFault_reason;
+    CST_Err_Reason_t sErr_reason;
+}GB_CST_Data_t;
+
+typedef struct
+{
+    U8 ucCrm_status;
+    U8 ucCro_status;
+    U32 stop_start_tick;
+    GB_CST_Data_t sCST;
+}GB_Charging_Charger_Data_t;
+
+#pragma pack(0)
+
+extern TimerHandle_t g_sRec_BRM_timer[2];
+extern GB_Charging_Charger_Data_t g_sGB_Charger_data[2];
+extern GB_Charging_Bms_Data_t g_sGB_Bms_data[2];
+extern GB_Version_t g_sGB_Version[2];
+
+g_psCharge_Control_t* GetGBChargeModel(void);
+
+void GB_BroMessageProcess(const U8 ucBro_status, const Gun_Id_e eGun_id);
+void GB_BclMessageProcess(const GB_BCL_Data_t sBSL_data, const Gun_Id_e eGun_id);
+void GB_BsmMessageProcess(const GB_BSM_Data_t sBSM_data, const Gun_Id_e eGun_id);
+void GB_BstMessageProcess(const GB_BST_Data_t sBST_data, const Gun_Id_e eGun_id);
+void GB_BemTimeoutProcess(const GB_BEM_Data_t sBEM_data, const Gun_Id_e eGun_id);
+void GB_BrmPrase(const U8 *ucBuf, const U8 ucLen, const Gun_Id_e eGun_id);
+void GB_BcpPrase(const U8 *ucBuf, const U8 ucLen, const Gun_Id_e eGun_id);
+void GB_BcsPrase(const U8 *ucBuf, const U8 ucLen, const Gun_Id_e eGun_id);
+
+#endif /* APP_GB_27930_COMM_H_ */

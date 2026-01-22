@@ -1,0 +1,600 @@
+/*
+ * led.c
+ *
+ *  Created on: 2024年11月1日
+ *      Author: qjwu
+ */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "stdio.h"
+#include "hal_sys_IF.h"
+#include "rgb_pwm_IF.h"
+#include "string.h"
+#include "led.h"
+#include "tcp_client_IF.h"
+#include "charge_process_IF.h"
+
+TaskHandle_t LEDA_TASK_Handler = NULL;
+TaskHandle_t LEDB_TASK_Handler = NULL;
+TimerHandle_t g_sTimer_led_breath = NULL;
+static BOOL g_bLed_breath_flag[2] = {FALSE, FALSE};
+static BOOL g_bLed_flash_flag[2] = {FALSE, FALSE};
+static BOOL g_bTimerRunning = FALSE;
+
+const U8 s_ucBreathe_table[] =
+{
+    2,2,2,3,3,4,4,5,5,6,7,8,9,10,11,12,13,14,15,
+
+    18,21,23,26,29,33,37,42,47,52,56,
+
+    60,66,73,81,88,92
+};
+
+/**
+ * @brief 枪LED控制常亮使能函数（红、绿、蓝）
+ * @param ucLed；需要亮灯的枪
+ * @param ucLed；需要亮灯的颜色
+ * @param unPeriod：PMW输出频率
+ * @param ucDutycycle：占空比
+ * @return
+ */
+static void LedPwmLight(U8 ucGun_id, U8 ucLed, U16 unPeriod, U8 ucDutycycle)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	if (ucGun_id == GUN_A)
+	{
+		//降低调用频率
+		if ((Rgb_Pwm_LED_A[0].current_led != ucLed) || (Rgb_Pwm_LED_A[ucLed].dutycycle != ucDutycycle))
+		{
+			for (U8 i = 0; i < 3U; i++)
+			{
+				if (ucLed == i)
+				{
+					Rgb_Pwm_LED_A[i].period = unPeriod;
+					Rgb_Pwm_LED_A[i].dutycycle = ucDutycycle;
+					g_sGun_data[GUN_A].ucLed_dutycycle[i] = ucDutycycle;
+				}
+				else
+				{
+					Rgb_Pwm_LED_A[i].period = unPeriod;
+					Rgb_Pwm_LED_A[i].dutycycle = 0;
+					g_sGun_data[GUN_A].ucLed_dutycycle[i] = 0;
+				}
+			}
+
+			Rgb_Pwm_LED_A[0].current_led = ucLed;
+			//触发PMW占空比更改
+			if (g_sLed_change_sem != NULL)
+			{
+				(void)xSemaphoreGive(g_sLed_change_sem);
+			}
+		}
+	}
+	else if (ucGun_id == GUN_B)
+	{
+		//降低调用频率
+		if ((Rgb_Pwm_LED_B[0].current_led != ucLed) || (Rgb_Pwm_LED_B[ucLed].dutycycle != ucDutycycle))
+		{
+			for (U8 i = 0; i < 3U; i++)
+			{
+				if (ucLed == i)
+				{
+					Rgb_Pwm_LED_B[i].period = unPeriod;
+					Rgb_Pwm_LED_B[i].dutycycle = ucDutycycle;
+					g_sGun_data[GUN_B].ucLed_dutycycle[i] = ucDutycycle;
+				}
+				else
+				{
+					Rgb_Pwm_LED_B[i].period = unPeriod;
+					Rgb_Pwm_LED_B[i].dutycycle = 0;
+					g_sGun_data[GUN_B].ucLed_dutycycle[i] = 0;
+				}
+			}
+
+			Rgb_Pwm_LED_B[0].current_led = ucLed;
+			//触发PMW占空比更改
+			if (g_sLed_change_sem != NULL)
+			{
+				(void)xSemaphoreGive(g_sLed_change_sem);
+			}
+		}
+	}
+	else
+	{
+		//不响应
+	}
+}
+
+/**
+ * @brief 枪LED控制闪烁使能函数（红、绿、蓝）
+ * @param ucGun_id；需要亮灯的枪
+ * @param ucLed；需要亮灯的颜色
+ * @param unPeriod：PMW输出频率
+ * @param ucDutycycle：占空比
+ * @return
+ */
+static void LedPwmTest(U8 ucGun_id, U8 ucLed, U16 unPeriod, U8 ucDutycycle)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	static U8 s_ucCnt[2] = {0};
+
+	if (GUN_A == ucGun_id)
+	{
+		if (s_ucCnt[ucGun_id] == 4U)
+		{
+			//判断实际值，翻转
+			if (0U != Rgb_Pwm_LED_A[ucLed].dutycycle)
+			{
+				ucDutycycle = 0;
+			}
+			LedPwmLight(GUN_A, ucLed, unPeriod, ucDutycycle);
+		}
+
+		s_ucCnt[ucGun_id]++;
+
+		if (s_ucCnt[ucGun_id] == 5U)
+		{
+			s_ucCnt[ucGun_id] = 0;
+		}
+	}
+	else
+	{
+		if (s_ucCnt[ucGun_id] == 4U)
+		{
+			//判断实际值，翻转
+			if (0U != Rgb_Pwm_LED_B[ucLed].dutycycle)
+			{
+				ucDutycycle = 0;
+			}
+			LedPwmLight(GUN_B, ucLed, unPeriod, ucDutycycle);
+		}
+
+		s_ucCnt[ucGun_id]++;
+
+		if (s_ucCnt[ucGun_id] == 5U)
+		{
+			s_ucCnt[ucGun_id] = 0;
+		}
+	}
+}
+
+/**
+ * @brief A/B枪同频LED控制闪烁使能函数（红、绿、蓝）
+ * @param unPeriod：PMW输出频率
+ * @param ucDutycycle：占空比
+ * @return
+ */
+static void LedPwmFlash(U16 unPeriod, U8 ucDutycycle)
+{
+    static U32 s_ulLastFlipMs = 0;         // 上次翻转的绝对时间戳
+    static U8 s_ucSharedDuty = 0;          // 共享占空比状态（0-灭，ucDutycycle-亮）
+
+    U32 ulNow = xTaskGetTickCount();
+    // 计算时间差（处理32位溢出）
+    U32 ulDiff = (ulNow >= s_ulLastFlipMs) ? (ulNow - s_ulLastFlipMs) : (0xFFFFFFFF - s_ulLastFlipMs + ulNow);
+
+    // 时间差达到闪烁周期，翻转共享状态（仅一次）
+    if (ulDiff >= FLASH_PERIOD_MS)
+    {
+        s_ucSharedDuty = (s_ucSharedDuty == 0) ? ucDutycycle : 0;  // 0→亮，亮→0
+        s_ulLastFlipMs = ulNow;  // 更新翻转时间戳
+    }
+
+    // A枪使能时，按共享状态设置LED
+    if (TRUE == g_bLed_flash_flag[GUN_A])
+    {
+    	if (STA_PLUGING == g_sGun_data[GUN_A].ucGun_common_status)
+    	{
+    		LedPwmLight(GUN_A, BLUE, unPeriod, s_ucSharedDuty);
+    	}
+    	else if (STA_BOOK == g_sGun_data[GUN_A].ucGun_common_status)
+    	{
+    		LedPwmLight(GUN_A, GREEN, unPeriod, s_ucSharedDuty);
+    	}
+    }
+
+    // B枪使能时，按共享状态设置LED
+    if (TRUE == g_bLed_flash_flag[GUN_B])
+    {
+    	if (STA_PLUGING == g_sGun_data[GUN_B].ucGun_common_status)
+    	{
+    		LedPwmLight(GUN_B, BLUE, unPeriod, s_ucSharedDuty);
+    	}
+    	else if (STA_BOOK == g_sGun_data[GUN_B].ucGun_common_status)
+    	{
+    		LedPwmLight(GUN_B, GREEN, unPeriod, s_ucSharedDuty);
+    	}
+    }
+}
+
+static void LedBreathTimeoutCallback(TimerHandle_t sTimer)
+{
+	static U8 s_ucIndex = 0;
+	static BOOL s_bDirection = TRUE;  // 方向标记
+
+	if (TRUE == g_bLed_breath_flag[GUN_A])
+	{
+		for (U8 i = 0; i < 3U; i++)
+		{
+			if (GREEN != i)
+			{
+				Rgb_Pwm_LED_A[i].period = PMW_PERIOD;
+				Rgb_Pwm_LED_A[i].dutycycle = 0;
+				g_sGun_data[GUN_A].ucLed_dutycycle[i] = 0;
+			}
+			else
+			{
+				Rgb_Pwm_LED_A[i].period = PMW_PERIOD;
+				Rgb_Pwm_LED_A[i].dutycycle = s_ucBreathe_table[s_ucIndex];
+				g_sGun_data[GUN_A].ucLed_dutycycle[i] = s_ucBreathe_table[s_ucIndex];
+			}
+		}
+	}
+
+	if (TRUE == g_bLed_breath_flag[GUN_B])
+	{
+		for (U8 i = 0; i < 3U; i++)
+		{
+			if (GREEN != i)
+			{
+				Rgb_Pwm_LED_B[i].period = PMW_PERIOD;
+				Rgb_Pwm_LED_B[i].dutycycle = 0;
+				g_sGun_data[GUN_B].ucLed_dutycycle[i] = 0;
+			}
+			else
+			{
+				Rgb_Pwm_LED_B[i].period = PMW_PERIOD;
+				Rgb_Pwm_LED_B[i].dutycycle = s_ucBreathe_table[s_ucIndex];
+				g_sGun_data[GUN_B].ucLed_dutycycle[i] = s_ucBreathe_table[s_ucIndex];
+			}
+		}
+	}
+
+	//触发PMW占空比更改
+	if (g_sLed_change_sem != NULL)
+	{
+		(void)xSemaphoreGive(g_sLed_change_sem);
+	}
+
+	// 更新步进方向
+	if (TRUE == s_bDirection)  // 方向：灭 → 亮（下标递增）
+	{
+	    s_ucIndex++;
+	    if (s_ucIndex >= (U8)(sizeof(s_ucBreathe_table) - 1U))  // 到达最后一个有效索引
+	    {
+	        s_bDirection = FALSE;  // 转向：开始递减（亮 → 灭）
+	    }
+	}
+	else  // 方向：亮 → 灭（下标递减）
+	{
+	    if (s_ucIndex > 0U)
+	    {
+	        s_ucIndex--;
+	    }
+	    // 当下标为4时，准备转向
+	    if (4U == s_ucIndex)
+	    {
+	    	s_ucIndex = 0;
+	        s_bDirection = TRUE;  // 转向：开始递增（灭 → 亮）
+	    }
+	}
+}
+
+/**
+ * @brief 枪LED呼吸
+ * @param ucGun_id：枪id
+ * @param ucLed：呼吸颜色
+ * @param unPeriod：PMW输出频率
+ * @return
+ */
+static void LedPWMBreath(U8 ucGun_id, U8 ucLed, U16 unPeriod)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	static U8 s_ucIndex = 0;
+	static BOOL s_bDirection = TRUE;  // 方向标记
+
+	if (ucGun_id == GUN_B)
+	{
+		for (U8 i = 0; i < 3U; i++)
+		{
+			if (ucLed != i)
+			{
+				Rgb_Pwm_LED_B[i].period = unPeriod;
+				Rgb_Pwm_LED_B[i].dutycycle = 0;
+				g_sGun_data[GUN_B].ucLed_dutycycle[i] = 0;
+			}
+			else
+			{
+				Rgb_Pwm_LED_B[i].period = unPeriod;
+				Rgb_Pwm_LED_B[i].dutycycle = s_ucBreathe_table[s_ucIndex];
+				g_sGun_data[GUN_B].ucLed_dutycycle[i] = s_ucBreathe_table[s_ucIndex];
+			}
+		}
+	}
+	else if (ucGun_id == GUN_A)
+	{
+		for (U8 i = 0; i < 3U; i++)
+		{
+			if (ucLed != i)
+			{
+				Rgb_Pwm_LED_A[i].period = unPeriod;
+				Rgb_Pwm_LED_A[i].dutycycle = 0;
+				g_sGun_data[GUN_A].ucLed_dutycycle[i] = 0;
+			}
+			else
+			{
+				Rgb_Pwm_LED_A[i].period = unPeriod;
+				Rgb_Pwm_LED_A[i].dutycycle = s_ucBreathe_table[s_ucIndex];
+				g_sGun_data[GUN_A].ucLed_dutycycle[i] = s_ucBreathe_table[s_ucIndex];
+			}
+		}
+	}
+
+	//触发PMW占空比更改
+	if (g_sLed_change_sem != NULL)
+	{
+		(void)xSemaphoreGive(g_sLed_change_sem);
+	}
+
+    // 更新步进方向
+    if (0U != s_bDirection)
+    {
+    	s_ucIndex = (s_ucIndex < (U8)sizeof(s_ucBreathe_table)) ? (s_ucIndex + 1U) : sizeof(s_ucBreathe_table);
+        if (sizeof(s_ucBreathe_table) == s_ucIndex)
+        {
+        	s_bDirection = FALSE;
+        }
+    }
+    else
+    {
+    	s_ucIndex = (s_ucIndex > 0U) ? (s_ucIndex - 1U) : 0U;
+        if (0U == s_ucIndex)
+        {
+        	s_bDirection = TRUE;
+        }
+    }
+}
+
+static void LedControl_B(void)
+{
+	//自检失败
+	if (SELF_CHECK_SUCCESS_FLAG != g_sSelf_check.unWhole_item)
+	{
+		//故障灯
+		LedPwmLight(GUN_B, RED, PMW_PERIOD, DUTY_CYCLE);
+		return ;
+	}
+	//禁用
+	if (GUN_DISABLE_STATUS == g_sGun_data[GUN_B].ucGun_disable_status)
+	{
+		//故障灯
+		LedPwmLight(GUN_B, RED, PMW_PERIOD, DUTY_CYCLE);
+	}
+	else
+	{
+		switch ((Charge_Sta_t)g_sGun_data[GUN_B].ucGun_common_status)
+		{
+		case STA_IDLE:
+			LedPwmLight(GUN_B, BLUE, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		case STA_PLUGING:
+			//LedPwmFlash(GUN_B, BLUE, PMW_PERIOD, DUTY_CYCLE);
+			g_bLed_flash_flag[GUN_B] = TRUE;
+			break;
+		case STA_START_CHARGE:
+		case STA_CHARGING:
+			//LedGreenBreath_B(PMW_PERIOD);
+			break;
+		case STA_CHARG_FINISHED:
+			LedPwmLight(GUN_B, GREEN, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		case STA_BOOK:
+			//LedPwmBook(GUN_B, GREEN, PMW_PERIOD, DUTY_CYCLE);
+			g_bLed_flash_flag[GUN_B] = TRUE;
+			break;
+		case STA_UNAVAILABLE:
+			LedPwmLight(GUN_B, RED, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		case STA_FAULT:
+			LedPwmLight(GUN_B, RED, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		default:
+			LedPwmLight(GUN_B, RED, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		}
+	}
+	//使能呼吸定时器
+	if ((FALSE == g_bTimerRunning) && (TRUE == g_bLed_breath_flag[GUN_B]))
+	{
+		(void)xTimerStart(g_sTimer_led_breath, 0);
+		g_bTimerRunning = TRUE;
+	}
+	else if ((TRUE == g_bTimerRunning) && (FALSE == g_bLed_breath_flag[GUN_B])
+		&& (FALSE == g_bLed_breath_flag[GUN_A]))
+	{
+		(void)xTimerStop(g_sTimer_led_breath, 0);
+		g_bTimerRunning = FALSE;
+	}
+
+	return;
+}
+
+static void LedControl_A(void)
+{
+	//自检失败
+	if (SELF_CHECK_SUCCESS_FLAG != g_sSelf_check.unWhole_item)
+	{
+		//故障灯
+		LedPwmLight(GUN_A, RED, PMW_PERIOD, DUTY_CYCLE);
+		return ;
+	}
+	//禁用
+	if (GUN_DISABLE_STATUS == g_sGun_data[GUN_A].ucGun_disable_status)
+	{
+		//故障灯
+		LedPwmLight(GUN_A, RED, PMW_PERIOD, DUTY_CYCLE);
+	}
+	else
+	{
+		switch ((Charge_Sta_t)g_sGun_data[GUN_A].ucGun_common_status)
+		{
+		case STA_IDLE:
+			LedPwmLight(GUN_A, BLUE, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		case STA_PLUGING:
+			//LedPwmFlash(GUN_A, BLUE, PMW_PERIOD, DUTY_CYCLE);
+			g_bLed_flash_flag[GUN_A] = TRUE;
+			break;
+		case STA_START_CHARGE:
+		case STA_CHARGING:
+			//LedGreenBreath_A(PMW_PERIOD);
+			break;
+		case STA_CHARG_FINISHED:
+			LedPwmLight(GUN_A, GREEN, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		case STA_BOOK:
+			//LedPwmBook(GUN_A, GREEN, PMW_PERIOD, DUTY_CYCLE);
+			g_bLed_flash_flag[GUN_A] = TRUE;
+			break;
+		case STA_UNAVAILABLE:
+			LedPwmLight(GUN_A, RED, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		case STA_FAULT:
+			LedPwmLight(GUN_A, RED, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		default:
+			LedPwmLight(GUN_A, RED, PMW_PERIOD, DUTY_CYCLE);
+			break;
+		}
+	}
+
+	//使能呼吸定时器
+	if ((FALSE == g_bTimerRunning) && (TRUE == g_bLed_breath_flag[GUN_A]))
+	{
+		(void)xTimerStart(g_sTimer_led_breath, 0);
+		g_bTimerRunning = TRUE;
+	}
+	else if ((TRUE == g_bTimerRunning) && (FALSE == g_bLed_breath_flag[GUN_B])
+		&& (FALSE == g_bLed_breath_flag[GUN_A]))
+	{
+		(void)xTimerStop(g_sTimer_led_breath, 0);
+		g_bTimerRunning = FALSE;
+	}
+
+	return;
+}
+
+/**
+ * @brief 控制A/B枪同频闪烁
+ * @return
+ */
+void LedFlashControl(void)
+{
+	LedPwmFlash(PMW_PERIOD, DUTY_CYCLE);
+
+	if ((STA_PLUGING != g_sGun_data[GUN_A].ucGun_common_status)
+			&& (STA_BOOK != g_sGun_data[GUN_A].ucGun_common_status))
+	{
+		g_bLed_flash_flag[GUN_A] = FALSE;
+	}
+
+	if ((STA_PLUGING != g_sGun_data[GUN_B].ucGun_common_status)
+		&& (STA_BOOK != g_sGun_data[GUN_B].ucGun_common_status))
+	{
+		g_bLed_flash_flag[GUN_B] = FALSE;
+	}
+}
+
+static void LED_Control_Task_A(void *parameter)
+{
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+	volatile UBaseType_t uxHighWaterMark;
+#endif
+	//记录当前使能的led颜色
+	Rgb_Pwm_LED_A[0].current_led = 0xFF;
+
+	while (1)
+	{
+		LedControl_A();
+
+		LedFlashControl();
+
+		if (TRUE == CheckChargingStatus(GUN_A))
+		{
+			//使能呼吸灯
+		    g_bLed_breath_flag[GUN_A] = TRUE;
+			vTaskDelay(50);
+		}
+		else
+		{
+			//关闭呼吸灯
+		    g_bLed_breath_flag[GUN_A] = FALSE;
+			vTaskDelay(250);
+		}
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+		uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+#endif
+	}
+}
+
+static void LED_Control_Task_B(void *parameter)
+{
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+	volatile UBaseType_t uxHighWaterMark;
+#endif
+	//记录当前使能的led颜色
+	Rgb_Pwm_LED_B[0].current_led = 0xFF;
+
+	while (1)
+	{
+		LedControl_B();
+
+		if (TRUE == CheckChargingStatus(GUN_B))
+		{
+			//使能呼吸灯
+		    g_bLed_breath_flag[GUN_B] = TRUE;
+			vTaskDelay(50);
+		}
+		else
+		{
+			//关闭呼吸灯
+		    g_bLed_breath_flag[GUN_B] = FALSE;
+			vTaskDelay(250);
+		}
+#ifdef FREE_STACK_SPACE_CHECK_ENABLE
+		uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+#endif
+	}
+}
+
+void Led_Init_Task(void * pvParameters)
+{
+	//呼吸定时器
+	g_sTimer_led_breath = xTimerCreate("LEDBreathTimer",        /* Text name. */
+    							 LED_BREATH_TIMER_PERIOD_MS, 	/* Timer period. */
+								 pdTRUE,             			/* Enable auto reload. */
+								 "LEDBreath",              		/* ID is not used. */
+								 &LedBreathTimeoutCallback);   	/* The callback function. */
+
+	taskENTER_CRITICAL();
+
+	//add other iso_init task here
+	(void)xTaskCreate(&LED_Control_Task_A, "LED_CONTROL_A", 500U/4U, NULL, LED_TASK_PRIO, &LEDA_TASK_Handler);
+	(void)xTaskCreate(&LED_Control_Task_B, "LED_CONTROL_B", 500U/4U, NULL, LED_TASK_PRIO, &LEDB_TASK_Handler);
+
+	vTaskDelete(NULL);
+
+	taskEXIT_CRITICAL();
+}

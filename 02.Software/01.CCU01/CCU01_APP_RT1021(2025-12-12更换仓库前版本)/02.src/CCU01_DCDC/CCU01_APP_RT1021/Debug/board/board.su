@@ -1,0 +1,8 @@
+D:\svn\02.src\CCU01_APP_RT1021\CMSIS/mpu_armv7.h:191:22:ARM_MPU_Enable	16	static
+D:\svn\02.src\CCU01_APP_RT1021\CMSIS/mpu_armv7.h:204:22:ARM_MPU_Disable	4	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_clock.h:1236:24:CLOCK_GetMux	16	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_clock.h:1287:24:CLOCK_GetDiv	16	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_clock.h:1348:24:CLOCK_GetOscFreq	4	static
+../board/board.c:25:10:BOARD_DebugConsoleSrcFreq	24	static
+../board/board.c:44:6:BOARD_InitDebugConsole	16	static
+../board/board.c:52:6:BOARD_ConfigMPU	40	static

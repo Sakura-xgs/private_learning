@@ -1,0 +1,447 @@
+/*
+ * Copyright (c) 2015, Freescale Semiconductor, Inc.
+ * Copyright 2016-2017 NXP
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
+/* FreeRTOS kernel includes. */
+#include "FreeRTOS.h"
+#include "task.h"
+
+/* Freescale includes. */
+#include "fsl_device_registers.h"
+#include "fsl_debug_console.h"
+#include "pin_mux.h"
+#include "fsl_xbara.h"
+#include "board.h"
+#include "peripherals.h"
+
+/*app includes*/
+#include "hal_can_IF.h"
+#include "hal_uart_IF.h"
+#include "hal_eeprom_IF.h"
+#include "hal_eth_IF.h"
+#include "hal_ext_rtc.h"
+#include "hal_sys_IF.h"
+#include "boot.h"
+#include "poll_adc.h"
+#include "rgb_pwm.h"
+#include "charge_can.h"
+#include "SignalManage.h"
+#include "PublicDefine.h"
+#include "tcp_client_IF.h"
+#include "meter_IF.h"
+#include "imd_IF.h"
+#include "rfid_IF.h"
+#include "hmi_IF.h"
+#include "pos_IF.h"
+#include "led_IF.h"
+#include "emergency_fault_IF.h"
+#include "charge_process_IF.h"
+#include "charge_price_IF.h"
+#include "flash_data_IF.h"
+#include "charge_comm_IF.h"
+
+#include "TcpBoot.h"
+#include "cJSON.h"
+#include "cm_backtrace.h"
+#include "datasample.h"
+#include "fan_pwm_IF.h"
+#include "cig_IF.h"
+#include "fsl_lpi2c.h"
+
+
+/*******************************************************************************
+ * Prototypes
+ ******************************************************************************/
+static void Led_Task(void *pvParameters);
+static void I2cErrRecover(void *pvParameters);
+static void Init_Task(void * pvParameters);
+static void Self_Check_Task(void * pvParameters);
+static void cJSON_Init(void);
+static void UserUartBaudRateInit(void);
+
+/*******************************************************************************
+ * Version Info
+ ******************************************************************************/
+__RODATA(APP_VERSION) volatile const SOFT_VER cst_sw_no =
+{
+	_LINK_T(CCU01, A, D, D, 25, B, 27),
+    _SW_NUM(N01),
+};
+
+const char cst_hw_no[16] =
+{
+    'C','C','U','0','1','_','A','D','D','_','V','1','.','1',' ',' '
+};
+
+#define HARDWARE_VERSION               "V1.0.0"
+#define SOFTWARE_VERSION               "V0.1.0"
+
+/*******************************************************************************
+ * Variables
+ ******************************************************************************/
+Self_Check_t g_sSelf_check = {0};
+__BSS(SRAM_OC) U8 ucSN[32] = {0};
+/*******************************************************************************
+ * Code
+ ******************************************************************************/
+
+/*!
+ * @brief Application entry point.
+ */
+int main(void)
+{
+    /* Init MCU hardware. */
+	BOARD_ConfigMPU();
+	BOARD_InitBootPins();
+    BOARD_InitBootClocks();
+    XBARA_Init(XBARA);
+    Hal_InitEnetModuleClock();
+
+    Boot_Init();
+
+    /* Peripheral INIT */
+	BOARD_InitBootPeripherals();
+
+    /* ETH INIT */
+    HAL_ENET_PHY_RESET();
+    MDIO_Init();
+
+    /* user init */
+    UserUartBaudRateInit();
+    Hal_Can_Init();
+    Hal_Uart_Init();
+    Hal_I2c_Init();
+
+    Hal_Norflash_Init();
+
+    cJSON_Init();
+    cm_backtrace_init("CmBacktrace", HARDWARE_VERSION, SOFTWARE_VERSION);
+
+    (void)xTaskCreate(&Lwip_Init,				   "LWIP_INIT",		   	   1100U/4U,		NULL,	INIT_TASK_PRIO,				NULL);
+    (void)xTaskCreate(&Save_Eeprom_Task,           "SAVE_EEPROM",          400U/4U,   		NULL,   SAVE_EEPROM_TASK_PRIO,      NULL);
+    (void)xTaskCreate(&Init_Task,				   "INIT",				   1024U/4U,		NULL,	INIT_TASK_PRIO,				NULL);
+    (void)xTaskCreate(&Led_Task,                   "LED",                  300U/4U, 		NULL,   LED_TASK_PRIO,            	NULL);
+    (void)xTaskCreate(&I2cErrRecover,              "I2CERRRECOVER",        400U/4U, 		NULL,   LED_TASK_PRIO,            	NULL);
+
+    vTaskStartScheduler();
+    for (;;){};
+
+    return 0;
+}
+
+/**
+ * @brief 串口波特率重置
+ * @param
+ * @return
+ */
+static void UserUartBaudRateInit(void)
+{
+	Uart_BaudRate_Reinit(DBG_UART, baud_115200);
+	Uart_BaudRate_Reinit(METER_UART, baud_9600);
+	Uart_BaudRate_Reinit(POS_UART, baud_115200);
+	Uart_BaudRate_Reinit(GB_GUNA_UART, baud_115200);
+	Uart_BaudRate_Reinit(GB_GUNB_UART, baud_115200);
+	Uart_BaudRate_Reinit(RFID_UART, baud_19200);
+	Uart_BaudRate_Reinit(IMD_UART, baud_9600);
+	Uart_BaudRate_Reinit(HMI_UART, baud_9600);
+}
+
+static void Init_Task(void * pvParameters)
+{
+	//软件版本
+	(void)memcpy(g_sPile_data.ucSoftware, (void*)&cst_sw_no, sizeof(g_sPile_data.ucSoftware));
+	//硬件版本
+	(void)memcpy(g_sPile_data.ucHardware, &cst_hw_no, sizeof(g_sPile_data.ucHardware));
+	//等待EEPROM
+	vTaskDelay(1000);
+
+	InitSigVal();
+
+    //获取充电桩配置
+    GetPileConfig();
+	uPRINTF("================= CCU START =================\n");
+	uPRINTF("CCU software: %s\n", g_sPile_data.ucSoftware);
+	uPRINTF("CCU hardware: %s\n", g_sPile_data.ucHardware);
+
+    taskENTER_CRITICAL();
+
+    (void)xTaskCreate(&Ext_Rtc_Init_Task,           "RTC_INIT",      		configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&SetSignalValInit_Task,       "SIGNAL_INIT",          configMINIMAL_STACK_SIZE,     	NULL,   INIT_TASK_PRIO,            	NULL);
+    (void)xTaskCreate(&DataSample_Init_task,        "SAMPLE_INIT",          configMINIMAL_STACK_SIZE,   	NULL,   INIT_TASK_PRIO,           	NULL);
+    (void)xTaskCreate(&Charge_Can_Comm_Init_task,   "CHG_CAN_COMM_INIT",    configMINIMAL_STACK_SIZE,   	NULL,   INIT_TASK_PRIO,         	NULL);
+    (void)xTaskCreate(&Uart_Init_Task,              "UART_INIT",          	configMINIMAL_STACK_SIZE,   	NULL,   INIT_TASK_PRIO,    			NULL);
+    (void)xTaskCreate(&Poll_Adc_Init_Task,          "POLL_ADC_Init",        configMINIMAL_STACK_SIZE,   	NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Rgb_Pwm_Init_Task,           "RGB_PWM_INIT",         configMINIMAL_STACK_SIZE,   	NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&UpdateFuncInitTask,          "UPDATE_FUN_INIT",      configMINIMAL_STACK_SIZE,   	NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&TCP_Init_Task,         		"TCP_INIT",      		configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Rfid_Init_Task,         		"RFID_INIT",      		configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Meter_Init_Task,         	"METER_INIT",      		configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Hmi_Init_Task,         		"HMI_INIT",      		configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Imd_Init_Task,         		"IMD_INIT",      		configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Pos_Init_Task,         		"POS_INIT",      		configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Charge_Process_Init_Task,    "CHARGE_PROCESS_INIT",  configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Charge_Init_Task,         	"CHARGE_INIT",      	configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Emergency_Fault_Init_Task,   "EMERGENCY_FAULT_INIT", configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Led_Init_Task,  				"LED_INIT", 			configMINIMAL_STACK_SIZE,	    NULL,   INIT_TASK_PRIO,             NULL);
+    (void)xTaskCreate(&Self_Check_Task,             "SELF_CHECK",           configMINIMAL_STACK_SIZE, 		NULL,   INIT_TASK_PRIO,            	NULL);
+    (void)xTaskCreate(&Charge_Price_Init_Task,      "CHARGE_PRICE_INIT",    configMINIMAL_STACK_SIZE, 		NULL,   INIT_TASK_PRIO,            	NULL);
+    (void)xTaskCreate(&Fan_Pwm_Init_Task,           "FAN_PWM_INIT",         configMINIMAL_STACK_SIZE, 		NULL,   INIT_TASK_PRIO,            	NULL);
+    (void)xTaskCreate(&Cig_Init_Task,               "CIG_INIT",             configMINIMAL_STACK_SIZE, 		NULL,   INIT_TASK_PRIO,            	NULL);
+
+    vTaskDelete(NULL);
+
+    taskEXIT_CRITICAL();
+}
+
+/**
+ * @brief 充电桩开机自检项检测任务
+ * @param NULL
+ * @return
+*/
+static void Self_Check_Task(void *pvParameters)
+{
+	U32 uiHmi_tick = 0;
+	BOOL bHmi_flag = FALSE;
+	U32 uiImd_tick = 0;
+	BOOL bImd_flag = FALSE;
+	U32 uiMeter_tick = 0;
+	BOOL bMeter_flag = FALSE;
+	BOOL bSelf_check_flag = TRUE;
+
+    for (;;)
+    {
+    	//IIC自检失败
+    	if (TRUE == g_blExtEepromErrFg)
+    	{
+			PileAlarmSet(ALARM_ID_EEPROM_CHECK_ERROR);
+			my_printf(USER_ERROR, "%s:%d EEPROM self-check failed\n", __FILE__, __LINE__);
+			bSelf_check_flag = FALSE;
+    	}
+    	else
+    	{
+    		g_sSelf_check.sItem.eeprom_checkself_flag = (U16)TRUE;
+    	}
+    	//桩编号
+    	if ((U16)FALSE == g_sSelf_check.sItem.pile_num_valid_flag)
+    	{
+			if ((PILE_NUM_MIN <= g_sStorage_data.ucPile_num)
+				&& (g_sStorage_data.ucPile_num <= PILE_NUM_MAX))
+			{
+				g_sSelf_check.sItem.pile_num_valid_flag = (U16)TRUE;
+			}
+			else
+			{
+				PileAlarmSet(ALARM_ID_PILE_NUM_ERROR);
+				my_printf(USER_ERROR, "%s:%d pile number self-check failed\n", __FILE__, __LINE__);
+				bSelf_check_flag = FALSE;
+			}
+    	}
+		//枪编号
+    	if ((U16)FALSE == g_sSelf_check.sItem.gun_num_valid_flag)
+    	{
+			if ((GUN_NUM_MIN <= g_sStorage_data.sPublic_data[GUN_A].ucGun_id)
+					&& (g_sStorage_data.sPublic_data[GUN_A].ucGun_id <= GUN_NUM_MAX)
+					&& (GUN_NUM_MIN <= g_sStorage_data.sPublic_data[GUN_B].ucGun_id)
+					&& (g_sStorage_data.sPublic_data[GUN_B].ucGun_id <= GUN_NUM_MAX)
+					&& (g_sStorage_data.sPublic_data[GUN_A].ucGun_id != g_sStorage_data.sPublic_data[GUN_B].ucGun_id))
+			{
+				g_sSelf_check.sItem.gun_num_valid_flag = (U16)TRUE;
+			}
+			else
+			{
+				PileAlarmSet(ALARM_ID_GUN_NUM_ERROR);
+				my_printf(USER_ERROR, "%s:%d gun number self-check failed\n", __FILE__, __LINE__);
+				bSelf_check_flag = FALSE;
+			}
+    	}
+    	//HMI通讯
+    	g_sSelf_check.sItem.hmi_comm_flag = (U16)TRUE;//test
+    	if ((U16)FALSE == g_sSelf_check.sItem.hmi_comm_flag)
+    	{
+    		if (!bHmi_flag)
+    		{
+    			uiHmi_tick = xTaskGetTickCount();
+    			bHmi_flag = TRUE;
+    		}
+
+    		if ((xTaskGetTickCount() - uiHmi_tick) > HMI_COM_TIMEOUT)
+    		{
+    			PileAlarmSet(ALARM_ID_HMI_COMM_LOST_ALARM);
+    			my_printf(USER_ERROR, "HMI comm self-check failed\n");
+    			bSelf_check_flag = FALSE;
+    		}
+    	}
+    	//IMD地址冲突:验证地址
+    	if (((U16)FALSE == g_sSelf_check.sItem.imd_comm_flag_A)
+    			&& ((U16)FALSE == g_sSelf_check.sItem.imd_comm_flag_B))
+    	{
+    		if (!bImd_flag)
+    		{
+    			uiImd_tick = xTaskGetTickCount();
+    			bImd_flag = TRUE;
+    		}
+
+    		if ((xTaskGetTickCount() - uiImd_tick) > DEVICE_TIMEOUT_MS)
+    		{
+    			PileAlarmSet(ALARM_ID_IMD_ADD_CONFLICT_ERROR);
+    			my_printf(USER_ERROR, "%s:%d IMD self-check failed: address conflict\n", __FILE__, __LINE__);
+    			bSelf_check_flag = FALSE;
+    		}
+    	}
+    	//meter地址冲突:验证地址
+    	if (((U16)FALSE == g_sSelf_check.sItem.meter_comm_flag_A)
+    			&& ((U16)FALSE == g_sSelf_check.sItem.meter_comm_flag_B))
+    	{
+    		if (!bMeter_flag)
+    		{
+    			uiMeter_tick = xTaskGetTickCount();
+    			bMeter_flag = TRUE;
+    		}
+
+    		if ((xTaskGetTickCount() - uiMeter_tick) > DEVICE_TIMEOUT_MS)
+    		{
+    			PileAlarmSet(ALARM_ID_METER_ADDR_CONFLICT_ERROR);
+    			my_printf(USER_ERROR, "%s:%d METER self-check failed: address conflict\n", __FILE__, __LINE__);
+    			bSelf_check_flag = FALSE;
+    		}
+    	}
+    	//自检完成
+    	if (SELF_CHECK_SUCCESS_FLAG == g_sSelf_check.unWhole_item)
+    	{
+    		taskENTER_CRITICAL();
+    	    vTaskDelete(NULL);
+    		taskEXIT_CRITICAL();
+    	}
+    	//自检失败
+        if (FALSE == bSelf_check_flag)
+        {
+        	taskENTER_CRITICAL();
+            vTaskDelete(NULL);
+        	taskEXIT_CRITICAL();
+        }
+        vTaskDelay(200);
+    }
+}
+
+/*!
+ * @brief Task responsible for printing of "Hello world." message.
+ */
+static void Led_Task(void *pvParameters)
+{
+	volatile unsigned int * SCB_CCR=(volatile int *)0xE000ED14U;
+	*SCB_CCR |= (1U << 4U);//打开除0报错
+
+    for (;;)
+    {
+    	WDOG_WDI_TOGGLE();
+    	//生产测试模式下停止原逻辑控制
+    	if (g_sPile_data.ucPile_config_mode != PRODUCTION_MODE)
+    	{
+    		USER_LED_TOGGLE();
+    	}
+
+		vTaskDelay(1000);
+
+		// 获取当前空闲堆内存大小
+		//size_t free_heap_size = xPortGetFreeHeapSize();
+		// 获取自启动以来空闲堆内存的最小值
+	    //size_t min_free_heap_size = xPortGetMinimumEverFreeHeapSize();
+    }
+}
+
+//extern const lpi2c_master_config_t EEPROM_I2C_masterConfig;
+static void I2cErrRecover(void *pvParameters)
+{
+    while(1)
+    {
+		if(I2cErrReconfigFlag == TRUE)
+		{
+			(void)xSemaphoreTake(EEPROM_I2C_masterHandle.mutex, portMAX_DELAY);
+
+			//1.禁用DMA
+			LPI2C_MasterEnableDMA(EEPROM_I2C_PERIPHERAL, false, false);
+			//2.反初始化，删除句柄、互斥锁、信号量等
+			LPI2C_RTOS_Deinit(&EEPROM_I2C_masterHandle);
+			//3.重新初始化,包括创建互斥锁、信号量,初始化I2C
+			EEPROM_I2C_init();
+			//只重新初始化I2C。经测试，只重新初始化I2C不行
+		    //LPI2C_MasterInit(EEPROM_I2C_PERIPHERAL, &EEPROM_I2C_masterConfig, EEPROM_I2C_CLOCK_FREQ);
+
+			I2cErrReconfigFlag = FALSE;
+
+			(void)xSemaphoreGive(EEPROM_I2C_masterHandle.mutex);
+
+			//vTaskDelay(500);
+
+			//my_printf(USER_ERROR, "%s:%d Eeprom I2C reconfig\n", __FILE__, __LINE__);
+		}
+		else
+		{
+			vTaskDelay(1000);
+		}
+    }
+}
+
+__BSS(SRAM_OC) U8 cJSON_MemPool[2048];//静态内存池
+
+static void* my_malloc(size_t size)
+{
+    if (cJSON_MemOffset + size > sizeof(cJSON_MemPool))
+    {
+        return NULL;  // 内存不足
+    }
+    void* ptr = &cJSON_MemPool[cJSON_MemOffset];
+    cJSON_MemOffset += size;
+    return ptr;
+}
+
+static void my_free(void* ptr)
+{
+    // 静态内存池不需要释放
+    (void)ptr;
+}
+
+static void cJSON_Init(void)
+{
+//	cJSON_Hooks cJsonNhooks_freeRTOS;
+//	cJsonNhooks_freeRTOS.malloc_fn = pvPortMalloc;
+//	cJsonNhooks_freeRTOS.free_fn = vPortFree;
+//
+//	cJSON_InitHooks(&cJsonNhooks_freeRTOS);
+
+	cJSON_Hooks cJsonNhooks_MyStaticMemManager;
+	cJsonNhooks_MyStaticMemManager.malloc_fn = &my_malloc;
+	cJsonNhooks_MyStaticMemManager.free_fn = &my_free;
+
+	cJSON_InitHooks(&cJsonNhooks_MyStaticMemManager);
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char * pcTaskName)
+{
+	static BOOL g_blAppStackOverFlowFg = FALSE;
+	static __BSS(SRAM_OC) U8 g_u8AppStackOverFlowNameBuf[STACK_OVER_FLOW_BUF_LEN][configMAX_TASK_NAME_LEN] = {0};
+
+    static U8 u8BufLoc = 0;
+    U8 u8AppNameCnt = 0;
+
+    g_blAppStackOverFlowFg = TRUE;
+
+    for (u8AppNameCnt = 0; u8AppNameCnt < (U8)configMAX_TASK_NAME_LEN; u8AppNameCnt++)
+    {
+        g_u8AppStackOverFlowNameBuf[u8BufLoc][u8AppNameCnt] = (U8)pcTaskName[u8AppNameCnt];
+    }
+
+    u8BufLoc = (u8BufLoc+1U)%(U8)STACK_OVER_FLOW_BUF_LEN;
+    my_printf(USER_ERROR, "%s:%d Stack overflow during task switching\n", __FILE__, __LINE__);
+}
+
+static void vApplicationMallocFailedHook( void )
+{
+	static BOOL g_blAppMallocFailedFg = FALSE;
+
+    g_blAppMallocFailedFg = TRUE;
+}

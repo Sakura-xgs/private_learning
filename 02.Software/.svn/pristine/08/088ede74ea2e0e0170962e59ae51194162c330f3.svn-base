@@ -1,0 +1,6 @@
+../user_code/APP/hmi/hmi.c:32:6:HmiModuleSelect	16	static
+../user_code/APP/hmi/hmi.c:40:13:HmiRequestTask	16	static
+../user_code/APP/hmi/hmi.c:60:13:HmiTimeoutCallback	16	static
+../user_code/APP/hmi/hmi.c:65:13:HmiDataProcess	32	static
+../user_code/APP/hmi/hmi.c:91:13:Hmi_Parse_Task	40	static
+../user_code/APP/hmi/hmi.c:118:6:Hmi_Init_Task	32	static

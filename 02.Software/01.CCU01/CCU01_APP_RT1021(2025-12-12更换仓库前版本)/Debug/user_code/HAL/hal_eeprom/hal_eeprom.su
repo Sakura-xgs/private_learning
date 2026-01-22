@@ -1,0 +1,7 @@
+../user_code/HAL/hal_eeprom/hal_eeprom.c:27:13:eep_compare	24	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:38:17:FM24C64_IIC_READ_ARRAY	24	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:62:17:FM24C64_IIC_WRITE_ARRAY	24	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:86:6:ExtEepromSaveParameter	64	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:222:6:ExtEepromReadParameter	64	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:344:10:EepromBufferWrite	24	static
+../user_code/HAL/hal_eeprom/hal_eeprom.c:423:10:EepromBufferRead	24	static

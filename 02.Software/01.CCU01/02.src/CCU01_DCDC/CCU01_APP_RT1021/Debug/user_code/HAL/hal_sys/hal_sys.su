@@ -1,0 +1,14 @@
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\CMSIS/core_cm7.h:2041:22:__NVIC_SetPriority	16	static
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\drivers/fsl_iomuxc.h:911:20:IOMUXC_EnableMode	24	static
+D:\SVN_code\02.Software\01.CCU01\02.src\CCU01_DCDC\CCU01_APP_RT1021\drivers/fsl_gpio.h:176:24:GPIO_PinRead	16	static
+../user_code/HAL/hal_sys/hal_sys.c:20:6:Hal_InitEnetModuleClock	16	static
+../user_code/HAL/hal_sys/hal_sys.c:31:6:Hal_I2c_Init	8	static
+../user_code/HAL/hal_sys/hal_sys.c:143:6:AllLedToggle	8	static
+../user_code/HAL/hal_sys/hal_sys.c:147:6:FeedWatchDog	8	static
+../user_code/HAL/hal_sys/hal_sys.c:152:27:GetSysRunModeFg	4	static
+../user_code/HAL/hal_sys/hal_sys.c:157:6:SetSysNormalModeFg	4	static
+../user_code/HAL/hal_sys/hal_sys.c:162:6:SetSysShuttingDownModeFg	4	static
+../user_code/HAL/hal_sys/hal_sys.c:167:6:SetSysPowerOffModeFg	4	static
+../user_code/HAL/hal_sys/hal_sys.c:173:13:WatchDogFeedFunc	8	static
+../user_code/HAL/hal_sys/hal_sys.c:181:13:LedBlinkFunc	8	static
+../user_code/HAL/hal_sys/hal_sys.c:186:13:vLedTaskDelay	24	static

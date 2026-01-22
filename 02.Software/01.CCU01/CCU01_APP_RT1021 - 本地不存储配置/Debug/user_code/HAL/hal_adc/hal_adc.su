@@ -1,0 +1,4 @@
+../user_code/HAL/hal_adc/hal_adc.c:112:5:HAL_TEMP_AdToTemp_PT1000	32	static
+../user_code/HAL/hal_adc/hal_adc.c:160:5:HAL_TEMP_AdToTemp_3380	32	static
+../user_code/HAL/hal_adc/hal_adc.c:213:5:HAL_TEMP_AdToTemp_3435	32	static
+../user_code/HAL/hal_adc/hal_adc.c:267:5:HAL_TEMP_AdToTemp_UnKnow	16	static

@@ -1,0 +1,8 @@
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_common_arm.h:225:20:_SDK_AtomicLocalClearAndSet4Byte	48	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_clock.h:1298:20:CLOCK_ControlGate	32	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_clock.h:1315:20:CLOCK_EnableClock	16	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_iomuxc.h:859:20:IOMUXC_SetPinMux	24	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_iomuxc.h:891:20:IOMUXC_SetPinConfig	24	static
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_gpio.h:253:20:GPIO_PortEnableInterrupts	16	static
+../board/pin_mux.c:105:6:BOARD_InitBootPins	8	static
+../board/pin_mux.c:221:6:BOARD_InitPins	152	static

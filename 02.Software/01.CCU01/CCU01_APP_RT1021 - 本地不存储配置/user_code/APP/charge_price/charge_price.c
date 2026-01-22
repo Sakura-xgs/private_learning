@@ -1,0 +1,617 @@
+/*
+ * charge_price.c
+ *
+ *  Created on: 2025年4月24日
+ *      Author: qjwu
+ */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "stdio.h"
+#include "string.h"
+
+#include "hal_ext_rtc.h"
+#include "meter_IF.h"
+#include "charge_price.h"
+#include "SignalManage.h"
+#include "charge_process_IF.h"
+#include "tcp_client_IF.h"
+#include "charge_comm_IF.h"
+#include "pos_IF.h"
+
+SemaphoreHandle_t g_sStart_timing_sem[2] = {NULL, NULL};
+
+static U32 g_uiFee_cnt[2] = {0};
+static TimerHandle_t g_sTimer_occupation_fee[2] = {NULL, NULL};
+// 时区偏移量（单位：小时，UTC+8为例）
+static S8 g_iTimeOffsetHours = 8;
+// 24小时峰谷电价表（0.01元/度单位）
+static S32 g_iHourlyRateTable[24] = {
+    // 00:00-06:59 (7小时) - 谷时
+    80, 80, 80, 80, 80, 80, 80,
+    // 07:00-11:59 (5小时) - 平峰
+    100, 100, 100, 100, 100,
+    // 12:00-17:59 (6小时) - 峰时
+    150, 150, 150, 150, 150, 150,
+    // 18:00-23:59 (6小时) - 平峰
+    100, 100, 100, 100, 100, 100
+};
+
+// 全局电价表
+//static S32 g_iHourlyRateTable[24] = {0};
+
+static void GUNA_FeeTimeoutCallback(TimerHandle_t sTimer)
+{
+	S32 iFee = 0;
+	S32 SumFee = 0;
+	(void)GetSigVal(CCU_SET_SIG_ID_OCCUPATION_FEE_UNIT_PRICE, &iFee);
+	g_uiFee_cnt[GUN_A]++;
+	SumFee = (S32)g_uiFee_cnt[GUN_A]*iFee/(60000/FEE_TIMER_PERIOD_MS);//10S计算一次占位费
+
+	(void)SetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_A, SumFee);
+	//my_printf(USER_INFO, "GUN_A current occupation fee = %d\n", SumFee);
+}
+
+static void GUNB_FeeTimeoutCallback(TimerHandle_t sTimer)
+{
+	S32 iFee = 0;
+	S32 SumFee = 0;
+	(void)GetSigVal(CCU_SET_SIG_ID_OCCUPATION_FEE_UNIT_PRICE, &iFee);
+	g_uiFee_cnt[GUN_B]++;
+	SumFee = (S32)g_uiFee_cnt[GUN_B]*iFee/(60000/FEE_TIMER_PERIOD_MS);//10S计算一次占位费
+
+	(void)SetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_B, SumFee);
+	//my_printf(USER_INFO, "GUN_B current occupation fee = %d\n", SumFee);
+}
+
+/**
+ * @brief 宽限期/占位费处理函数
+ * @param ucGun_id：枪id
+ * @return
+ */
+static void OccupationFeeProcess(U8 ucGun_id)
+{
+	if (FALSE == GunIdValidCheck(ucGun_id))
+	{
+		return ;
+	}
+
+	S32 iTime = 0;
+	U32 uiNow_tick = xTaskGetTickCount();
+	BOOL bStart_timer_flag = FALSE;
+	U8 ucTmp_type[2] = {0};
+	(void)GetSigVal(CCU_SET_SIG_ID_GRACE_PERIOD, &iTime);
+
+	while(1)
+	{
+//		if (ucGun_id == GUN_A)
+//		{
+//			//枪正常归位，停止计费
+//			if ((U32)TRUE == GET_GUN1_FB_STATUS())
+//			{
+//				if (NULL != g_sTimer_occupation_fee[GUN_A])
+//				{
+//					(void)xTimerStop(g_sTimer_occupation_fee[GUN_A], 0);
+//				}
+//				//恢复占位费计数
+//				g_uiFee_cnt[GUN_A] = 0;
+//				S32 iOccupation_fee = 0;
+//
+//				(void)GetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_A, &iOccupation_fee);
+//				//发送实际扣费
+//				g_psPOS_data->POS_Transaction[GUN_A].bHmi_TransactionCompletion_flag = TRUE;
+//				my_printf(USER_INFO, "%s:%d GUN_A unplug cancel grace period/occupation fee = %d\n", __FILE__, __LINE__, iOccupation_fee);
+//
+//			    break;
+//			}
+//			else
+//			{
+//				//超过宽限时间，开始计费
+//				if ((xTaskGetTickCount() - uiNow_tick) > ((U32)iTime*1000U*60U))//换算成tick
+//				{
+//					if (NULL != g_sTimer_occupation_fee[GUN_A])
+//					{
+//						if (FALSE == bStart_timer_flag)
+//						{
+//							my_printf(USER_INFO, "GUN_A start occupation fee timer\n");
+//							(void)xTimerStart(g_sTimer_occupation_fee[GUN_A], 0);
+//							bStart_timer_flag = TRUE;
+//						}
+//					}
+//				}
+//			}
+//		}
+//		else
+//		{
+//			//枪正常归位，停止计费
+//			if ((U32)TRUE == GET_GUN2_FB_STATUS())
+//			{
+//				if (NULL != g_sTimer_occupation_fee[GUN_B])
+//				{
+//					(void)xTimerStop(g_sTimer_occupation_fee[GUN_B], 0);
+//				}
+//				//恢复占位费计数
+//				g_uiFee_cnt[GUN_B] = 0;
+//				S32 iOccupation_fee = 0;
+//
+//				(void)GetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_B, &iOccupation_fee);
+//				//发送实际扣费
+//				g_psPOS_data->POS_Transaction[GUN_B].bHmi_TransactionCompletion_flag = TRUE;
+//				my_printf(USER_INFO, "%s:%d GUN_B unplug cancel grace period/occupation fee = %d\n", __FILE__, __LINE__, iOccupation_fee);
+//
+//			    break;
+//			}
+//			else
+//			{
+//				//超过宽限时间，开始计费
+//				if ((xTaskGetTickCount() - uiNow_tick) > ((U32)iTime*1000U*60U))//换算成tick
+//				{
+//					if (NULL != g_sTimer_occupation_fee[GUN_B])
+//					{
+//						if (FALSE == bStart_timer_flag)
+//						{
+//							my_printf(USER_INFO, "GUN_B start occupation fee timer\n");
+//							(void)xTimerStart(g_sTimer_occupation_fee[GUN_B], 0);
+//							bStart_timer_flag = TRUE;
+//						}
+//					}
+//				}
+//			}
+//		}
+
+		//不等于充电完成
+		if ((U8)STA_CHARG_FINISHED != g_sGun_data[ucGun_id].ucGun_common_status)
+		{
+			if (NULL != g_sTimer_occupation_fee[ucGun_id])
+			{
+				(void)xTimerStop(g_sTimer_occupation_fee[ucGun_id], 0);
+			}
+			//重置占位费计数
+			g_uiFee_cnt[ucGun_id] = 0U;
+			S32 iOccupation_fee = 0;
+			if (ucGun_id == GUN_A)
+			{
+				(void)GetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_A, &iOccupation_fee);
+				my_printf(USER_INFO, "%s:%d GUN_A unplug cancel grace period/occupation fee = %d type = %d\n", __FILE__, __LINE__, iOccupation_fee
+						,g_sGun_data[ucGun_id].sTemp.ucStart_Charge_type);
+				if (ucTmp_type[ucGun_id] == (U8)POS_START_MODE)
+				{
+					//发送实际扣费
+					if (NULL != g_psPOS_data)
+					{
+						g_psPOS_data->POS_Transaction[ucGun_id].bHmi_TransactionCompletion_flag = TRUE;
+					}
+					ucTmp_type[ucGun_id] = 0U;
+				}
+				else//测试启用，防止金额影响到下一笔充电
+				{
+					//清空金额
+					(void)SetSigVal(CCU_SAM_SIG_ID_CHARGE_PRICE_A, 0);
+					(void)SetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_A, 0);
+				}
+			}
+			else
+			{
+				(void)GetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_B, &iOccupation_fee);
+				my_printf(USER_INFO, "%s:%d GUN_B unplug cancel grace period/occupation fee = %d type = %d\n", __FILE__, __LINE__, iOccupation_fee
+						,g_sGun_data[ucGun_id].sTemp.ucStart_Charge_type);
+				if (ucTmp_type[ucGun_id] == (U8)POS_START_MODE)
+				{
+					//发送实际扣费
+					if (NULL != g_psPOS_data)
+					{
+						g_psPOS_data->POS_Transaction[ucGun_id].bHmi_TransactionCompletion_flag = TRUE;
+					}
+					ucTmp_type[ucGun_id] = 0U;
+				}
+				else//测试启用，防止金额影响到下一笔充电
+				{
+					//清空金额
+					(void)SetSigVal(CCU_SAM_SIG_ID_CHARGE_PRICE_B, 0);
+					(void)SetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_B, 0);
+				}
+			}
+
+		    break;
+		}
+		else
+		{
+			//超过宽限时间，开始计费
+			if ((xTaskGetTickCount() - uiNow_tick) > ((U32)iTime*1000U*60U))//换算成tick
+			{
+				if (NULL != g_sTimer_occupation_fee[ucGun_id])
+				{
+					if (FALSE == bStart_timer_flag)
+					{
+						my_printf(USER_INFO, "%s start occupation fee timer\n", (ucGun_id==GUN_A)?"GUN_A":"GUN_B");
+						(void)xTimerStart(g_sTimer_occupation_fee[ucGun_id], 0);
+						bStart_timer_flag = TRUE;
+					}
+				}
+			}
+			//拔枪后会清除充电方式，提前记录POS启动方式用于使能POS扣费
+			if (g_sGun_data[ucGun_id].sTemp.ucStart_Charge_type == (U8)POS_START_MODE)
+			{
+				ucTmp_type[ucGun_id] = POS_START_MODE;
+			}
+		}
+		vTaskDelay(1000);
+	}
+
+	return;
+}
+
+// 设置时区偏移
+void SetTimeOffset(S8 offset)
+{
+    if ((offset >= -12) && (offset <= 14))
+    {
+        g_iTimeOffsetHours = offset;
+    }
+}
+
+// 获取当前本地时间小时（0-23，纯整数运算）
+static U8 GetCurrentHour(void)
+{
+    U32 sysTimeMs = xTaskGetTickCount();
+    U32 totalMinutesUTC = (sysTimeMs / 60000U) % 1440U;  // 1440=24*60
+    S32 totalMinutesLocal = totalMinutesUTC + (g_iTimeOffsetHours * 60);
+
+    if (totalMinutesLocal < 0)
+    {
+        totalMinutesLocal += 1440;
+    }
+    else if (totalMinutesLocal >= 1440)
+    {
+        totalMinutesLocal %= 1440;
+    }
+
+    return (U8)(totalMinutesLocal / 60);
+}
+
+// 计费计算接口函数
+static void CalculateChargingCost(
+    U32 currentMeter,        // 当前电表读数（0.0001度）
+    U32* pLastMeter,         // 上次电表读数
+    S32* pHourlyPrices,      // 电价表（分/度，0.01元/度）
+    S32* pTotalCostMilli,    // 累计总费用（厘，1厘=0.001元）
+    S32* pAddCostMilli,      // 本次费用（厘）
+    U8* pLastHour
+)
+{
+    U32 meterDiff = 0U;
+    if (currentMeter >= *pLastMeter)
+    {
+        meterDiff = currentMeter - *pLastMeter;  // 0.0001度
+    }
+    else
+    {
+        meterDiff = 0;
+        my_printf(USER_ERROR, "Meter rollback detected: current=%u, last=%u", currentMeter, *pLastMeter);
+    }
+
+    U8 ucCurrentHour = GetCurrentHour();
+    ucCurrentHour = (ucCurrentHour >= 24U) ? 0U : ucCurrentHour;
+
+    S32 iCurrentPrice = pHourlyPrices[ucCurrentHour];
+    iCurrentPrice = (iCurrentPrice < 0) ? 0 : iCurrentPrice;
+
+    // 计算本次费用（厘）
+    *pAddCostMilli = (S32)((U64)meterDiff * iCurrentPrice / 1000);  // 精确到厘（0.001元）
+    *pAddCostMilli = (*pAddCostMilli < 0) ? 0 : *pAddCostMilli;
+
+    // 累计总费用
+    *pTotalCostMilli += *pAddCostMilli;
+    *pTotalCostMilli = (*pTotalCostMilli < 0) ? 0 : *pTotalCostMilli;
+
+    *pLastMeter = currentMeter;
+    if (*pLastHour != ucCurrentHour)
+    {
+        *pLastHour = ucCurrentHour;
+    }
+}
+
+// GUN_A 计费任务
+static void Charge_A_Price_Task(void *pvParameter)
+{
+    S32 iAdvanceChargePrice = 0;  // 预付费金额（分，0.01元）
+    S32 iTotalCostMilli = 0;      // 累计总费用（厘，1厘=0.001元）
+    S32 iAddCostMilli = 0;        // 本次费用（厘）
+    U8  ucLastHour = 0U;
+    U32 uiLastMeterValue = 0U;
+
+    static U8 ucPrice_debug = 0U;
+
+    while (1)
+    {
+        if (g_sStart_timing_sem[GUN_A] != NULL)
+        {
+            if (xSemaphoreTake(g_sStart_timing_sem[GUN_A], portMAX_DELAY) == pdTRUE)
+            {
+                iTotalCostMilli = 0;
+                iAddCostMilli = 0;
+                ucLastHour = GetCurrentHour();
+                uiLastMeterValue = g_sGun_data[GUN_A].uiCurrent_meter_dn;
+                my_printf(USER_INFO, "GUN_A start charging, initial meter value: %u (0.0001 kWh)\n", uiLastMeterValue);
+
+                // 读取预付费金额（分）
+                (void)GetSigVal(CCU_SET_SIG_ID_ADVANCE_CHARGE, &iAdvanceChargePrice);
+
+                while (1)
+                {
+                    if (g_sGun_data[GUN_A].ucGun_common_status != STA_CHARGING)
+                    {
+                        // 最终总费用（厘转分，四舍五入）
+                        S32 finalTotalCost = (iTotalCostMilli + COST_PRECISION_MILLI / 2) / COST_PRECISION_MILLI;
+                        my_printf(USER_INFO, "GUN_A stop charging, total cost: %d.%02d\n",
+                               finalTotalCost / 100, finalTotalCost % 100);
+#ifdef IDLE_FEE
+                        if (g_sGun_data[GUN_A].ucGun_common_status != STA_FAULT)
+                        {
+                            OccupationFeeProcess(GUN_A);
+                        }
+                        else
+                        {
+                            if (g_sGun_data[GUN_A].sTemp.ucStart_Charge_type == POS_START_MODE)
+                            {
+                    			if (NULL != g_psPOS_data)
+                    			{
+                    				g_psPOS_data->POS_Transaction[GUN_A].bHmi_TransactionCompletion_flag = TRUE;
+                    			}
+                            }
+                            else
+                            {
+                                (void)SetSigVal(CCU_SAM_SIG_ID_CHARGE_PRICE_A, 0);
+                            }
+                        }
+#else
+                        if (g_sGun_data[GUN_A].sTemp.ucStart_Charge_type == POS_START_MODE)
+                        {
+                			if (NULL != g_psPOS_data)
+                			{
+                				g_psPOS_data->POS_Transaction[GUN_A].bHmi_TransactionCompletion_flag = TRUE;
+                			}
+                        }
+        				else//测试启用，防止金额影响到下一笔充电
+        				{
+        					//清空金额
+        					(void)SetSigVal(CCU_SAM_SIG_ID_CHARGE_PRICE_A, 0);
+        					(void)SetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_A, 0);
+        				}
+#endif
+                        break;
+                    }
+
+                    U32 meterDiff = g_sGun_data[GUN_A].uiCurrent_meter_dn - uiLastMeterValue;
+                    CalculateChargingCost(
+                        g_sGun_data[GUN_A].uiCurrent_meter_dn,
+                        &uiLastMeterValue,
+                        g_iHourlyRateTable,
+                        &iTotalCostMilli,
+                        &iAddCostMilli,
+                        &ucLastHour
+                    );
+
+                    if (ucPrice_debug > 20)
+                    {
+                        U32 energyInt = meterDiff / METER_PRECISION;
+                        U32 energyDec = meterDiff % METER_PRECISION;
+
+                        // 本次费用和总费用（厘转分，四舍五入）
+                        S32 addCostCent = (iAddCostMilli + COST_PRECISION_MILLI / 2) / COST_PRECISION_MILLI;
+                        S32 totalCostCent = (iTotalCostMilli + COST_PRECISION_MILLI / 2) / COST_PRECISION_MILLI;
+
+                        my_printf(USER_INFO, "GUN_A current charging energy: %d.%04d kWh, current cost: %d.%02d, total cost: %d.%02d\n",
+                               energyInt, energyDec,
+                               addCostCent / 100, addCostCent % 100,
+                               totalCostCent / 100, totalCostCent % 100);
+                        ucPrice_debug = 0;
+                    }
+                    ucPrice_debug++;
+
+                    // 存储总费用（分，四舍五入）
+                    S32 totalCostCent = (iTotalCostMilli + COST_PRECISION_MILLI / 2) / COST_PRECISION_MILLI;
+                    (void)SetSigVal(CCU_SAM_SIG_ID_CHARGE_PRICE_A, totalCostCent);
+
+                    // 预付费判断（分）
+                    if (iAdvanceChargePrice > 0)
+                    {
+                        if (totalCostCent >= iAdvanceChargePrice)
+                        {
+                            g_sGun_data[GUN_A].sTemp.ucStop_Charge_type = PREPAID_BALANCE_OVER_MODE;
+                            StopChargeControl(GUN_A);
+                            // 打印时四舍五入到分
+                            S32 finalTotalCost = totalCostCent;
+                            my_printf(USER_INFO, "GUN_A prepaid balance exhausted, total cost: %d.%02d\n",
+                                   finalTotalCost / 100, finalTotalCost % 100);
+                            break;
+                        }
+                    }
+
+                    vTaskDelay(500);
+                }
+            }
+        }
+        else
+        {
+            vTaskDelay(5000);
+        }
+    }
+}
+
+// GUN_B 计费任务
+static void Charge_B_Price_Task(void *pvParameter)
+{
+    S32 iAdvanceChargePrice = 0;  // 预付费金额（分，0.01元）
+    S32 iTotalCostMilli = 0;      // 累计总费用（厘，1厘=0.001元）
+    S32 iAddCostMilli = 0;        // 本次费用（厘）
+    U8  ucLastHour = 0U;
+    U32 uiLastMeterValue = 0U;
+
+    static U8 ucPrice_debug = 0U;
+
+    while (1)
+    {
+        if (g_sStart_timing_sem[GUN_B] != NULL)
+        {
+            if (xSemaphoreTake(g_sStart_timing_sem[GUN_B], portMAX_DELAY) == pdTRUE)
+            {
+                iTotalCostMilli = 0;
+                iAddCostMilli = 0;
+                ucLastHour = GetCurrentHour();
+                uiLastMeterValue = g_sGun_data[GUN_B].uiCurrent_meter_dn;
+                my_printf(USER_INFO, "GUN_B start charging, initial meter value: %u (0.0001 kWh)\n", uiLastMeterValue);
+
+                // 读取预付费金额（分）
+                (void)GetSigVal(CCU_SET_SIG_ID_ADVANCE_CHARGE, &iAdvanceChargePrice);
+
+                while (1)
+                {
+                    if (g_sGun_data[GUN_B].ucGun_common_status != STA_CHARGING)
+                    {
+                        // 最终总费用（厘转分，四舍五入）
+                        S32 finalTotalCost = (iTotalCostMilli + COST_PRECISION_MILLI / 2) / COST_PRECISION_MILLI;
+                        my_printf(USER_INFO, "GUN_B stop charging, total cost: %d.%02d\n",
+                               finalTotalCost / 100, finalTotalCost % 100);
+#ifdef IDLE_FEE
+                        if (g_sGun_data[GUN_B].ucGun_common_status != STA_FAULT)
+                        {
+                            OccupationFeeProcess(GUN_B);
+                        }
+                        else
+                        {
+                            if (g_sGun_data[GUN_B].sTemp.ucStart_Charge_type == POS_START_MODE)
+                            {
+                    			if (NULL != g_psPOS_data)
+                    			{
+                    				g_psPOS_data->POS_Transaction[GUN_B].bHmi_TransactionCompletion_flag = TRUE;
+                    			}
+                            }
+                            else
+                            {
+                                (void)SetSigVal(CCU_SAM_SIG_ID_CHARGE_PRICE_B, 0);
+                            }
+                        }
+#else
+                        if (g_sGun_data[GUN_B].sTemp.ucStart_Charge_type == POS_START_MODE)
+                        {
+                			if (NULL != g_psPOS_data)
+                			{
+                				g_psPOS_data->POS_Transaction[GUN_B].bHmi_TransactionCompletion_flag = TRUE;
+                			}
+                        }
+        				else//测试启用，防止金额影响到下一笔充电
+        				{
+        					//清空金额
+        					(void)SetSigVal(CCU_SAM_SIG_ID_CHARGE_PRICE_B, 0);
+        					(void)SetSigVal(CCU_SAM_SIG_ID_OCCUPATION_FEE_B, 0);
+        				}
+#endif
+                        break;
+                    }
+
+                    U32 meterDiff = g_sGun_data[GUN_B].uiCurrent_meter_dn - uiLastMeterValue;
+                    CalculateChargingCost(
+                        g_sGun_data[GUN_B].uiCurrent_meter_dn,
+                        &uiLastMeterValue,
+                        g_iHourlyRateTable,
+                        &iTotalCostMilli,
+                        &iAddCostMilli,
+                        &ucLastHour
+                    );
+
+                    if (ucPrice_debug > 20)
+                    {
+                        U32 energyInt = meterDiff / METER_PRECISION;
+                        U32 energyDec = meterDiff % METER_PRECISION;
+
+                        // 本次费用和总费用（厘转分，四舍五入）
+                        S32 addCostCent = (iAddCostMilli + COST_PRECISION_MILLI / 2) / COST_PRECISION_MILLI;
+                        S32 totalCostCent = (iTotalCostMilli + COST_PRECISION_MILLI / 2) / COST_PRECISION_MILLI;
+
+                        my_printf(USER_INFO, "GUN_B current charging energy: %d.%04d kWh, current cost: %d.%02d, total cost: %d.%02d\n",
+                               energyInt, energyDec,
+                               addCostCent / 100, addCostCent % 100,
+                               totalCostCent / 100, totalCostCent % 100);
+                        ucPrice_debug = 0;
+                    }
+                    ucPrice_debug++;
+
+                    // 存储总费用（分，四舍五入）
+                    S32 totalCostCent = (iTotalCostMilli + COST_PRECISION_MILLI / 2) / COST_PRECISION_MILLI;
+                    (void)SetSigVal(CCU_SAM_SIG_ID_CHARGE_PRICE_B, totalCostCent);
+
+                    // 预付费判断（分）
+                    if (iAdvanceChargePrice > 0)
+                    {
+                        if (totalCostCent >= iAdvanceChargePrice)
+                        {
+                            g_sGun_data[GUN_B].sTemp.ucStop_Charge_type = PREPAID_BALANCE_OVER_MODE;
+                            StopChargeControl(GUN_B);
+                            // 打印时四舍五入到分
+                            S32 finalTotalCost = totalCostCent;
+                            my_printf(USER_INFO, "GUN_B prepaid balance exhausted, total cost: %d.%02d\n",
+                                   finalTotalCost / 100, finalTotalCost % 100);
+                            break;
+                        }
+                    }
+
+                    vTaskDelay(500);
+                }
+            }
+        }
+        else
+        {
+            vTaskDelay(5000);
+        }
+    }
+}
+
+void Charge_Price_Init_Task(void * pvParameters)
+{
+    g_sStart_timing_sem[GUN_A] = xSemaphoreCreateBinary();
+    if (NULL == g_sStart_timing_sem[GUN_A])
+    {
+    	my_printf(USER_ERROR, "%s:%d Charge_Price_Init_Task error\n", __FILE__, __LINE__);
+    	vTaskSuspend(NULL);
+    }
+    g_sStart_timing_sem[GUN_B] = xSemaphoreCreateBinary();
+    if (NULL == g_sStart_timing_sem[GUN_B])
+    {
+    	my_printf(USER_ERROR, "%s:%d Charge_Price_Init_Task error\n", __FILE__, __LINE__);
+    	vTaskSuspend(NULL);
+    }
+
+	//A枪占位费计算定时器
+    g_sTimer_occupation_fee[GUN_A] = xTimerCreate("GUNA_FEETimer",          /* Text name. */
+								 FEE_TIMER_PERIOD_MS, 	 /* Timer period. */
+								 pdTRUE,             	 /* Enable auto reload. */
+								 "GUNA_FEE",              /* ID is not used. */
+								 &GUNA_FeeTimeoutCallback);    /* The callback function. */
+	//B枪占位费计算定时器
+    g_sTimer_occupation_fee[GUN_B] = xTimerCreate("GUNB_FEETimer",          /* Text name. */
+    							 FEE_TIMER_PERIOD_MS, 	 /* Timer period. */
+								 pdTRUE,             	 /* Enable auto reload. */
+								 "GUNB_FEE",              /* ID is not used. */
+								 &GUNB_FeeTimeoutCallback);    /* The callback function. */
+
+    // 读取电价表
+//    for (int i = CCU_SET_SIG_ID_CHARGE_PRICE_UNIT_PRICE; i < CCU_SET_SIG_ID_END_FLAG; i++)
+//    {
+//        (void)GetSigVal(i, &g_iHourlyRateTable[i - CCU_SET_SIG_ID_CHARGE_PRICE_UNIT_PRICE]);
+//        // 确保电价非负
+//        if (g_iHourlyRateTable[i - CCU_SET_SIG_ID_CHARGE_PRICE_UNIT_PRICE] < 0)
+//        {
+//            g_iHourlyRateTable[i - CCU_SET_SIG_ID_CHARGE_PRICE_UNIT_PRICE] = 0;
+//        }
+//    }
+
+    vTaskDelay(500);
+	taskENTER_CRITICAL();
+
+	(void)xTaskCreate(&Charge_A_Price_Task, "CHARGE_A_PRICE", 600U/4U, NULL, INIT_TASK_PRIO, NULL);
+	(void)xTaskCreate(&Charge_B_Price_Task, "CHARGE_B_PRICE", 600U/4U, NULL, INIT_TASK_PRIO, NULL);
+
+	vTaskDelete(NULL);
+
+	taskEXIT_CRITICAL();
+}

@@ -1,0 +1,3 @@
+../user_code/APP/hmi/ATQ_hmi.c:13:13:ATQHmiParse	16	static
+../user_code/APP/hmi/ATQ_hmi.c:20:13:GetATQHmiModel	4	static
+../user_code/APP/hmi/ATQ_hmi.c:25:6:ATQHmiInit	4	static

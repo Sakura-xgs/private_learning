@@ -1,0 +1,10 @@
+D:\svn\02.src\CCU01_APP_RT1021\drivers/fsl_gpio.h:176:24:GPIO_PinRead	16	static
+../user_code/APP/uart_comm/uart_comm.c:37:6:my_unsigned_abs	32	static
+../user_code/APP/uart_comm/uart_comm.c:43:6:my_printf	44	static
+../user_code/APP/uart_comm/uart_comm.c:127:6:debug_printf	16	static
+../user_code/APP/uart_comm/uart_comm.c:162:13:DebugControl	48	static
+../user_code/APP/uart_comm/uart_comm.c:453:13:DebugRead	112	static
+../user_code/APP/uart_comm/uart_comm.c:512:13:DebugUartRec	16	static
+../user_code/APP/uart_comm/uart_comm.c:582:13:ExampleUartSend	520	static
+../user_code/APP/uart_comm/uart_comm.c:600:13:Debug_Uart_Task	24	static
+../user_code/APP/uart_comm/uart_comm.c:631:6:Uart_Init_Task	24	static

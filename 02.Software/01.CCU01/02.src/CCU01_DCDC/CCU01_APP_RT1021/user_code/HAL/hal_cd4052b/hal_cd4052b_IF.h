@@ -1,0 +1,32 @@
+/*
+ * hal_cd4502b_IF.h
+ *
+ *  Created on: 2024年9月9日
+ *      Author: Bono
+ */
+#include "fsl_common.h"
+#include "fsl_gpio.h"
+#include "pin_mux.h"
+
+
+#ifndef HAL_HAL_CD4052B_HAL_CD4052B_IF_H_
+#define HAL_HAL_CD4052B_HAL_CD4052B_IF_H_
+
+
+#define CHANNEL_A_ENABLE()		GPIO_WritePinOutput(BOARD_INITPINS_CD4052_CHA_GPIO, BOARD_INITPINS_CD4052_CHA_GPIO_PIN, 1);
+#define CHANNEL_A_DISABLE()		GPIO_WritePinOutput(BOARD_INITPINS_CD4052_CHA_GPIO, BOARD_INITPINS_CD4052_CHA_GPIO_PIN, 0);
+#define CHANNEL_B_ENABLE()		GPIO_WritePinOutput(BOARD_INITPINS_CD4052_CHB_GPIO, BOARD_INITPINS_CD4052_CHB_GPIO_PIN, 1);
+#define CHANNEL_B_DISABLE()		GPIO_WritePinOutput(BOARD_INITPINS_CD4052_CHB_GPIO, BOARD_INITPINS_CD4052_CHB_GPIO_PIN, 0);
+
+typedef enum
+{
+	e_0X0Y = 0,
+	e_1X1Y,
+	e_2X2Y,
+	e_3X3Y,
+}CD4052B_CHANNEL;
+
+
+extern void hal_cd4052b_choose_channel(CD4052B_CHANNEL channel);
+
+#endif /* HAL_HAL_CD4052B_HAL_CD4052B_IF_H_ */
